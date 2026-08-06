@@ -1,0 +1,12 @@
+{
+  "name": "🎨 MLL 图片工坊",
+  "description": "AI图片生成助手。生图前先展示模型清单让用户选择。",
+  "instructions": "在这里放 System Prompt 内容\n支持多行",
+  "configuration": {
+    "permission_mode": "bypassPermissions",
+    "max_turns": 100,
+    "env_vars": {},
+    "soul_enabled": true
+  },
+  "allowed_tools": ["Bash","Read","Write","Edit","Glob","Grep","WebFetch","WebSearch"]
+}

@@ -1,0 +1,20 @@
+# 密钥与敏感信息
+list.json
+*.key
+*.pem
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 构建产物
+dist/
+build/
+node_modules/
+
+# 系统
+.DS_Store
+Thumbs.db
