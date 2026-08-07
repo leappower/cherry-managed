@@ -2,7 +2,7 @@
 # CherryStudio Agent 远程管理规范
 ##
 ##
-# 路径: Y:\Chee\OpenClaw_C\CherryStudioAgent远程控制\
+# 路径: Y:\Chee\OpenClaw_C\cherry-managed\
 # 最后更新: 2026-07-18 15:36
 # 管理中枢: OpenClaw (鮱澄 @ Mac HOST_180)
 # 适用: 局域网 CherryStudio API 远程管理
@@ -12,7 +12,7 @@
 # 一、目录结构
 ##
 #
-# CherryStudioAgent远程控制/
+# cherry-managed/
 # ├── INDEX.md               ← 本文件（唯一入口）
 # ├── cs-key.py              ← Key 映射脚本（唯一获取 Key 的方式）
 # ├── list.json              ← 机器/Key 清单

@@ -5,7 +5,7 @@
 ## 项目结构
 
 ```
-CherryStudioAgent远程控制/
+cherry-managed/
 ├── docs/
 │   ├── 方案-企业受管版-v1.0.md     ← 完整方案（R1-R7 + 架构 + 交付）
 │   ├── INDEX.md                   ← 原管理中枢入口

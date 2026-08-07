@@ -22,7 +22,7 @@ import json, subprocess, sys, os
 
 def _find_list():
     paths = [
-        "/Volumes/Chee_2/Chee/OpenClaw_C/CherryStudioAgent远程控制/list.json",
+        "/Volumes/Chee_2/Chee/OpenClaw_C/cherry-managed/list.json",
         "/Volumes/Chee_2/OpenClaw/CherryStudio/list.json",
     ]
     for p in paths:

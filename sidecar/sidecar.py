@@ -38,7 +38,7 @@ from cherry_client import CherryClient, CherryError  # noqa: E402
 def _find_list_json() -> Path:
     candidates = [
         PROJECT_ROOT / "list.json",
-        Path("/Volumes/Chee_2/Chee/OpenClaw_C/CherryStudioAgent远程控制/list.json"),
+        Path("/Volumes/Chee_2/Chee/OpenClaw_C/cherry-managed/list.json"),
         Path("/Volumes/Chee_2/OpenClaw/CherryStudio/list.json"),
     ]
     for p in candidates:

@@ -1,7 +1,7 @@
 ##
 # CherryStudio Agent 远程管理经验存档
 ##
-# 路径: Y:\Chee\OpenClaw_C\CherryStudioAgent远程控制\
+# 路径: Y:\Chee\OpenClaw_C\cherry-managed\
 # 本文: SKILL经验蒸馏.md
 # 最后更新: 2026-07-18
 ##
