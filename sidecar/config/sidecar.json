@@ -1,0 +1,47 @@
+{
+  "server": {
+    "url": "ws://127.0.0.1:2334/ws",
+    "token": "CHANGE_ME_managed_token"
+  },
+  "device": {
+    "device_id": "dev-sidecar-001",
+    "hostname": "dev-sidecar-host",
+    "os": "linux",
+    "group": "default"
+  },
+  "fork": {
+    "host": "127.0.0.1",
+    "port": 23333,
+    "api_key": "",
+    "base_url": "http://127.0.0.1:23333"
+  },
+  "cherry": {
+    "version": "2.0.1",
+    "fork_version": "4.0.0-rc.1"
+  },
+  "paths": {
+    "user_data": "./data",
+    "agents_deploy": "./data/Agents/deployed",
+    "skills_dir": "./data/skills",
+    "managed_registry_db": "./data/Data/managed_registry.db",
+    "agent_files_root": "./data/Agents"
+  },
+  "heartbeat": {
+    "interval": 20,
+    "timeout": 60
+  },
+  "reconnect": {
+    "initial_delay": 1,
+    "max_delay": 60,
+    "multiplier": 2.0
+  },
+  "collection": {
+    "usage_interval": 60,
+    "reconcile_interval": 120,
+    "status_interval": 30
+  },
+  "usage_source": {
+    "url": "http://127.0.0.1:23333/v1/admin/usage",
+    "enabled": true
+  }
+}
