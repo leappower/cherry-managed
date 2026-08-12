@@ -29,8 +29,8 @@
 
 | 概念 | 定义 | 落地形态 |
 |------|------|---------|
-| **受管 / 非受管** | 受管 = 公司统一派发并保护的对象（provider/Agent/SKILLS/MCP）；非受管 = 员工自配，完全自由，不在管控范围 | managed_registry 旁路表判定 |
-| **managed_registry** | 本地 sqlite 旁路表，记录 id→managed 映射，Sidecar 唯一写者，不动官方 schema，无锁库/迁移风险 | `managed_registry.db` |
+| **受管 / 非受管** | 受管 = 公司统一派发并保护的对象（provider/Agent/SKILLS/MCP）；非受管 = 员工自配，完全自由，不在管控范围 | managed_entity 旁路表判定 |
+| **managed_entity** | 本地 sqlite 旁路表（表名 managed_entity，修订对齐批次 C 决策 iii），记录 (kind,id)→受管映射，Sidecar 唯一写者，不动官方 schema，无锁库/迁移风险 | `managed_registry.db`（文件名保留） |
 | **Fork 管理路由** | 在官方 `/v1` API Gateway（Elysia v1Routes 链）追加 `/v1/admin/*` 插件，供 Sidecar/服务端管理员工端 | `adminRoutes` 插件，复用 Service 方法 |
 | **独立管理 key** | `feature.api_gateway.managed_key`，与普通 API key 分离，bearer timing-safe 比对，员工拿到普通 key 也无法调管理路由 | 独立鉴权 |
 | **Sidecar** | 员工端独立常驻进程（NSSM Windows 服务），连服务端 WS + 调 Fork 管理路由 + 派发 + 采集 + 对账 + 自愈 | Python + PyInstaller → exe |
@@ -67,7 +67,7 @@
 │ │  热更新 IPC 广播   │  │                │ │ Sidecar (NSSM)   │  │
 │ │  锁死 UI（源码级） │  │                │ │  WS 客户端        │  │
 │ │  禁官方更新通道    │  │                │ │  派发/采集/对账    │  │
-│ └────────▲─────────┘  │                │ │  managed_registry │  │
+│ └────────▲─────────┘  │                │ │  managed_entity  │  │
 │          │ HTTPS 127.0.0.1             │ │  自愈             │  │
 │ ┌────────┴─────────┐  │                │ └──────────────────┘  │
 │ │ Sidecar (NSSM)   │  │                └───────────────────────┘
@@ -147,7 +147,7 @@ Fork 管理路由（服务端/Sidecar 侧写 sqlite）
 
 | 决策 | 为什么 |
 |------|--------|
-| **D1 企业模型命名隔离** | `企_` 前缀约定隔离 + managed_registry 真正控制；员工自配自由 |
+| **D1 企业模型命名隔离** | `企_` 前缀约定隔离 + managed_entity 真正控制；员工自配自由 |
 | **D2 Key 保护** | 改「UI 锁死隐藏 + 花费监控异常停 key 重建」（见 D17） |
 | **D3 Agent 完整打包** | agent-package.zip（agent.json + skills/ + mcp/ + data/），开箱即用 |
 | **D4 SKILLS 版本仓库** | skills-repo/{name}/{version}/，Agent 包引用 skill-a@v1.2 |
@@ -169,7 +169,7 @@ Fork 管理路由（服务端/Sidecar 侧写 sqlite）
 | 决策 | 化解的质询 | 为什么 |
 |------|-----------|--------|
 | **独立管理 key** | Q-A1 员工拿到普通 key 就能调管理路由的后门 | 独立 managed_key + timing-safe bearer；Sidecar 加密存储不落明文 |
-| **受管标记走旁路表** | Q7/Q-A3 加 managed 列有迁移/锁库风险 | 独立 sqlite managed_registry，Sidecar 唯一写者，不动官方 schema |
+| **受管标记走旁路表** | Q7/Q-A3 加 managed 列有迁移/锁库风险 | 独立 sqlite managed_entity，Sidecar 唯一写者，不动官方 schema |
 | **锁死 UI 走源码级** | Q2/Q-A4 asar 注入脆弱、注入点漂移 | 改 Fork 渲染组件（编译期固定）+ lock_rules 远程化策略参数；代价每版 rebase |
 | **Fork 管理路由复用 Service** | Q-A15 直写 sqlite 破坏事务 | 复用 AgentService/ProviderService（D20） |
 | **热更新自建链路** | Q-A14/Q-A19 官方无「服务端写入→UI 刷新」现成链路 | 自建 IPC 广播 → invalidateQueries；M0 必测 |
