@@ -109,12 +109,12 @@ class WSClient:
         """建立一次连接并进入收发循环。异常抛出由 _run 处理退避。"""
         if self._stop.is_set():
             return
-        ws = websocket.create_connection(self.url, timeout=10)
+        ws = websocket.create_connection(self.url, timeout=30)
         self.ws = ws
+        self._connected = True
         # 首条消息 register 由 sidecar.py 通过 on_connected 发送
         if self.on_connected:
             self.on_connected()
-        self._connected = True
         self._reconnect_delay = self.initial_delay  # 连接成功重置退避
         logger.info("WS 已连接: %s", self.url)
         try:
