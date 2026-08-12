@@ -28,3 +28,6 @@ server/data/*.db-wal
 server/data/*.db-shm
 .pytest_cache/
 server/.pytest_cache/
+
+# 自建更新通道 feed（运行时生成，不入库）
+server/patch_repo/

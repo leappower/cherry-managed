@@ -16,7 +16,7 @@ from pathlib import Path
 # 兼容 config.json 里相对路径（相对 server/ 目录）
 SERVER_DIR = Path(__file__).resolve().parent
 
-# 连接池：每线程一个 sqlite 连接（FastAPI 异步下避免跨线程共用）
+# 连接池：每线程按 db_path 缓存 sqlite 连接（FastAPI 异步下避免跨线程共用）
 _LOCAL = threading.local()
 
 
@@ -29,15 +29,22 @@ def db_path_from_config(db_path: str) -> Path:
 
 
 def get_conn(db_path: Path) -> sqlite3.Connection:
-    """返回当前线程的 sqlite 连接（懒创建 + 缓存）。"""
-    conn = getattr(_LOCAL, "conn", None)
+    """返回当前线程的 sqlite 连接（懒创建 + 按 path 缓存）。
+
+    注意：按 db_path 区分缓存，避免不同库（如测试临时库 vs 生产库）
+    共用同一连接导致数据串写。
+    """
+    db_path = Path(db_path)
+    if not hasattr(_LOCAL, "conns"):
+        _LOCAL.conns = {}
+    conn = _LOCAL.conns.get(str(db_path))
     if conn is None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        _LOCAL.conn = conn
+        _LOCAL.conns[str(db_path)] = conn
     return conn
 
 

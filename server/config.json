@@ -4,5 +4,6 @@
   "token": "CHANGE_ME_managed_token",
   "db_path": "data/managed.db",
   "heartbeat_timeout": 60,
-  "offline_queue": true
+  "offline_queue": true,
+  "patch_repo_dir": "patch_repo"
 }
