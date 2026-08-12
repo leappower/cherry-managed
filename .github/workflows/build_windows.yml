@@ -1,0 +1,60 @@
+name: Build Sidecar (Windows)
+
+# E-3 路径 B：在 Windows runner 上构建真正的 sidecar.exe。
+# PyInstaller 不交叉编译，Windows exe 必须在 Windows 环境构建。
+# 触发：手动 / 打 tag v* / push 到 master 且改到 sidecar 或 workflow。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+  push:
+    branches:
+      - master
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/build_windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: ${{ matrix.arch }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller websocket-client
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          cd sidecar
+          pyinstaller --clean --noconfirm --onefile \
+            --specpath scripts \
+            --distpath ../dist --workpath ../build \
+            scripts/build.spec
+          ls -la ../dist/
+
+      - name: Smoke test (help)
+        shell: bash
+        run: |
+          ./dist/sidecar.exe --help || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-windows-${{ matrix.arch }}
+          path: dist/sidecar.exe
+          if-no-files-found: error

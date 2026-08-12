@@ -8,6 +8,7 @@ list.json
 __pycache__/
 *.pyc
 .venv/
+.venv-build/
 venv/
 
 # 构建产物
