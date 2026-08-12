@@ -80,7 +80,7 @@ cherry-managed/
 | GET | `/v1/admin/agents` | — | `[{id,name,type,model,managed,...}]` |
 | GET | `/v1/admin/agents/:id` | — | `{id,name,type,model,instructions,...}` |
 | PUT | `/v1/admin/agents/:id` | 全量字段，受管项校验 | `{id,...}`（受管项更新需管理 key） |
-| DELETE | `/v1/admin/agents/:id` | — | `{ok:true}`（受管保护：非 managed_registry 写者不可删受管项） |
+| DELETE | `/v1/admin/agents/:id` | — | `{ok:true}`（受管保护：非 managed_entity 写者不可删受管项） |
 | POST | `/v1/admin/agents/:id/disable` | — | `{ok:true}`（软删/下架，员工端不可见不可用） |
 | POST | `/v1/admin/agents/reorder` | `{ids:[...]}` | `{ok:true}` |
 
@@ -112,7 +112,7 @@ cherry-managed/
 
 ### 2.5 受管保护语义（泛化）
 
-- `isManaged(id)` → 查旁路表 managed_registry；
+- `isManaged(id)` → 查旁路表 managed_entity；
 - 管理路由对受管项的变更需校验请求方为 Sidecar/服务端（管理 key 保证）；
 - 渲染层对受管项隐藏删除/编辑（见锁死 UI）；
 - 员工手动改（绕过管理路由）由 Sidecar 对账发现并修复。
@@ -173,17 +173,24 @@ cherry-managed/
 
 ## 4. 数据模型
 
-### 4.1 managed_registry（本地旁路表，sqlite，Sidecar 唯一写者）
+### 4.1 managed_entity（受管旁路表，sqlite，Sidecar 唯一写者）
+
+> 修订（批次 C，决策 iii 拍板）：统一为 `managed_entity(kind, id, created_at)`，与 M1 Fork `ManagedRegistryService.ts` 对齐。旧版 `managed_registry(id, type, managed)` 已废弃。
 
 ```sql
-CREATE TABLE managed_registry (
-  id TEXT PRIMARY KEY,      -- provider/agent/skill/mcp 的 id
-  type TEXT NOT NULL,       -- 'provider' | 'agent' | 'skill' | 'mcp'
-  managed INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT
+CREATE TABLE managed_entity (
+  kind       TEXT NOT NULL,      -- 'agent' | 'provider' | 'skill' | 'mcp'
+  id         TEXT NOT NULL,      -- provider/agent/skill/mcp 的 id
+  created_at INTEGER NOT NULL,   -- epoch 毫秒（与 Fork Date.now() 对齐）
+  PRIMARY KEY (kind, id)
 );
 ```
-- 不动官方 schema，无迁移锁库风险（Q7/Q-A3）。
+- **不动官方 schema，无迁移锁库风险（Q7/Q-A3）。**
+- **Sidecar 唯一写者**（S-8 `managed_registry.py`）；Fork 渲染层只读（`ManagedRegistryService.ts`）。
+- **登记即受管**：表中存在的 (kind,id) 即受管项；无 `managed` 布尔列（冗余）。
+- **复合主键 (kind,id)**：同一 id 可分别以 provider/agent/skill/mcp 登记，互不冲突。
+- **路径**：`{userData}/Data/managed_registry.db`。
+- 详细闭环设计见 `docs/批次C-受管旁路表闭环方案.md`。
 
 ### 4.2 ai_usage_record（官方原生表，Fork 读取）
 

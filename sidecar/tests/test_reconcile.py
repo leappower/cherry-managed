@@ -24,7 +24,7 @@ class FakeRegistry:
 
 
 def _reg(*kinds_ids):
-    rows = [{"kind": k, "id": i, "created_at": "2026-01-01"}
+    rows = [{"kind": k, "id": i, "created_at": 1735689600000}
             for k, i in kinds_ids]
     return FakeRegistry(rows)
 

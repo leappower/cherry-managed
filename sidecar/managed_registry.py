@@ -13,19 +13,19 @@
   - Fork 渲染层 isManaged(id) 读本表 → 受管项锁死 UI / 隐藏删除。
   - 对账（reconcile.py）依据本表判定「受管保护」vs「员工自配非受管」。
 
-M1 F-8 schema（与 Fork 渲染层对齐）：
+M1 F-8 schema（与 Fork 渲染层对齐，created_at 已定稿为 INTEGER epoch 毫秒）：
   CREATE TABLE managed_entity (
       kind       TEXT NOT NULL,   -- 'agent' | 'provider' | 'skill' | 'mcp'
       id         TEXT NOT NULL,   -- 受管项 id
-      created_at TEXT,
+      created_at INTEGER NOT NULL, -- epoch 毫秒（与 Fork Date.now() 一致）
       PRIMARY KEY (kind, id)
   );
 """
 from __future__ import annotations
 
-import datetime
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 KINDS = ("agent", "provider", "skill", "mcp")
@@ -34,14 +34,15 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS managed_entity (
     kind       TEXT NOT NULL,
     id         TEXT NOT NULL,
-    created_at TEXT,
+    created_at INTEGER NOT NULL,
     PRIMARY KEY (kind, id)
 );
 """
 
 
-def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+def _now() -> int:
+    """返回 epoch 毫秒（与 M1 Fork Date.now() 对齐）。"""
+    return int(time.time() * 1000)
 
 
 class ManagedRegistry:
