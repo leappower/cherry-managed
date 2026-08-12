@@ -1,0 +1,8 @@
+{
+  "host": "0.0.0.0",
+  "port": 2334,
+  "token": "CHANGE_ME_managed_token",
+  "db_path": "data/managed.db",
+  "heartbeat_timeout": 60,
+  "offline_queue": true
+}
