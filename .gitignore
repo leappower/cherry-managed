@@ -21,3 +21,10 @@ Thumbs.db
 
 # CherryStudio API key 本地副本
 APIkey.txt
+
+# SQLite 运行时数据（不入库）
+server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
+.pytest_cache/
+server/.pytest_cache/
