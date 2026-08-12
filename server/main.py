@@ -17,13 +17,14 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import db
 import feed
+import auth as auth_mod
 from ws_server import WSServer
 
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +40,19 @@ db.init_db(DB_PATH)
 
 ws_server = WSServer(CONFIG, DB_PATH)
 
+# 批次D：D-2 Web 管理后台 —— 管理员鉴权
+admin_auth = auth_mod.AdminAuth(
+    CONFIG.get("admin_user", "admin"),
+    CONFIG.get("admin_password_hash", ""),
+)
+
+
+def require_admin(x_admin_token: str | None = Header(default=None)):
+    """管理 API 鉴权依赖：X-Admin-Token 须为有效 session token，否则 401。"""
+    if not admin_auth.check_token(x_admin_token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return x_admin_token
+
 # 批次D：E-2 自建更新通道（generic electron-updater feed）
 PATCH_REPO_DIR = Path(CONFIG.get("patch_repo_dir", "patch_repo"))
 if not PATCH_REPO_DIR.is_absolute():
@@ -49,6 +63,15 @@ app = FastAPI(title="CherryStudio 企业受管版 - 服务端", version="0.2.0-a
 
 # 静态挂载 patch_repo/ 供 electron-updater generic provider 拉取
 app.mount("/patch_repo", StaticFiles(directory=str(PATCH_REPO_DIR)), name="patch_repo")
+
+# D-2：管理后台静态页挂载（/admin/ 默认 index.html）
+ADMIN_STATIC_DIR = SERVER_DIR / "static" / "admin"
+ADMIN_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/admin",
+    StaticFiles(directory=str(ADMIN_STATIC_DIR), html=True),
+    name="admin_static",
+)
 
 
 def _check_token(x_token: str | None):
@@ -147,6 +170,100 @@ async def api_dispatch_provider(req: DispatchProviderReq):
 
 @app.post("/api/dispatch/skills")
 async def api_dispatch_skills(req: DispatchSkillsReq):
+    return await ws_server.dispatch.dispatch_skills(
+        req.device_id, req.skills, req.request_id
+    )
+
+
+# ================= D-2 Web 管理后台 API（需 admin token） =================
+class AdminLoginReq(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/admin/login")
+async def admin_login(req: AdminLoginReq):
+    """管理员登录：校验用户名密码，成功发 token + 写审计，失败 401。"""
+    token = admin_auth.login(req.username, req.password)
+    if token is None:
+        db.audit(DB_PATH, req.username, "admin_login_failed", req.username)
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    db.audit(DB_PATH, req.username, "admin_login", req.username)
+    return {"token": token, "user": req.username}
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(token: str = Depends(require_admin)):
+    """注销当前 admin session。"""
+    admin_auth.logout(token)
+    return {"ok": True}
+
+
+@app.get("/api/admin/devices", dependencies=[Depends(require_admin)])
+async def admin_devices():
+    """设备列表（含在线状态/分组）。"""
+    return ws_server.registry.get_all()
+
+
+@app.get("/api/admin/dispatch_log", dependencies=[Depends(require_admin)])
+async def admin_dispatch_log():
+    """派发日志。"""
+    return await list_dispatch_log()
+
+
+@app.get("/api/admin/usage", dependencies=[Depends(require_admin)])
+async def admin_usage(device_id: str | None = None):
+    """用量聚合。"""
+    return ws_server.collect.usage_for(device_id)
+
+
+@app.get("/api/admin/audit_log", dependencies=[Depends(require_admin)])
+async def admin_audit_log():
+    """操作审计日志（D-2 核心）。"""
+    conn = db.get_conn(DB_PATH)
+    rows = conn.execute(
+        "SELECT id, operator, action, target, timestamp, request_id "
+        "FROM audit_log ORDER BY id DESC LIMIT 500"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/admin/reconcile", dependencies=[Depends(require_admin)])
+async def admin_reconcile():
+    """对账汇总。"""
+    return await reconcile()
+
+
+@app.get("/api/admin/agents", dependencies=[Depends(require_admin)])
+async def admin_agents():
+    """各设备 Agent 清单（透传 agent_files 聚合）。"""
+    conn = db.get_conn(DB_PATH)
+    rows = conn.execute(
+        "SELECT DISTINCT device_id, agent_id, COUNT(*) AS file_count "
+        "FROM agent_files GROUP BY device_id, agent_id ORDER BY device_id, agent_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/admin/dispatch/agent", dependencies=[Depends(require_admin)])
+async def admin_dispatch_agent(req: DispatchAgentReq):
+    """管理派发 Agent（复用现有 dispatch 逻辑）。"""
+    return await ws_server.dispatch.dispatch_agent(
+        req.device_id, req.action, req.agent, req.package_url, req.request_id
+    )
+
+
+@app.post("/api/admin/dispatch/provider", dependencies=[Depends(require_admin)])
+async def admin_dispatch_provider(req: DispatchProviderReq):
+    """管理派发 Provider。"""
+    return await ws_server.dispatch.dispatch_provider(
+        req.device_id, req.action, req.provider, req.request_id
+    )
+
+
+@app.post("/api/admin/dispatch/skills", dependencies=[Depends(require_admin)])
+async def admin_dispatch_skills(req: DispatchSkillsReq):
+    """管理派发 Skills。"""
     return await ws_server.dispatch.dispatch_skills(
         req.device_id, req.skills, req.request_id
     )

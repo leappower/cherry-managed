@@ -423,3 +423,68 @@ F-7(usage路由) ──→ S-6(usage采集) ──→ D-6(花费监控) ──�
 | 版本 | 日期 | 变更内容 | 来源 |
 |------|------|---------|------|
 | v1.0 | 2026-08-07 | 初始创建，基于方案 v4.0 最终版 + CDD + 任务分解 + 质询 + 源码校验报告 | 研发主管 daima |
+| v1.1 | 2026-08-12 | 批次F：新增 §14 D-2 Web 管理后台 + §15 E-4 安装包集成契约 | 研发主管 daima（JJC-20260812-001） |
+
+---
+
+## 14. D-2 Web 管理后台（M3批次F）
+
+### 14.1 管理员登录鉴权
+- 单管理员：`config.json` 配置 `admin_user` / `admin_password_hash`
+- `admin_password_hash` 为 PBKDF2-HMAC-SHA256（`pbkdf2$iterations$salt_hex$hash_hex`）
+- `POST /api/admin/login` 校验 → 发随机 session token（内存会话表）
+- 管理 API 全部经 `X-Admin-Token` 头鉴权（无/错 token → 401）
+- 实现：`server/auth.py`（`AdminAuth`）+ `server/main.py` 依赖注入
+
+### 14.2 管理 API（需鉴权）
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/admin/login | 登录，发 token（免鉴权） |
+| POST | /api/admin/logout | 注销 session |
+| GET | /api/admin/devices | 设备列表+在线+分组 |
+| GET | /api/admin/dispatch_log | 派发日志 |
+| GET | /api/admin/usage | 用量聚合 |
+| GET | /api/admin/audit_log | 操作审计日志（D-2 核心） |
+| GET | /api/admin/reconcile | 对账汇总 |
+| GET | /api/admin/agents | 各设备 Agent 清单 |
+| POST | /api/admin/dispatch/agent|provider|skills | 管理派发（复用现有 dispatch） |
+
+### 14.3 管理页面
+- `server/static/admin/index.html` 挂载于 `/admin`（原生 HTML/JS + fetch，无构建链）
+- 登录页 + 设备/派发/用量/审计/Agent/对账 Tab
+
+### 14.4 操作审计
+- 登录/派发/发布等管理操作写 `audit_log`（复用 `db.audit`）
+- `GET /api/admin/audit_log` 可查询
+
+### 14.5 验收（AC1-AC4）
+| AC | 验收项 | 通过标准 |
+|----|--------|---------|
+| AC1 | 登录鉴权 | 错误密码 401，正确密码发 token |
+| AC2 | 管理 API 鉴权 | 无 token 401，有 token 200 |
+| AC3 | 审计日志 | 登录/派发写 audit_log 可查询 |
+| AC4 | 管理页面 | /admin 可登录 + 查看设备/派发/用量/审计 |
+
+---
+
+## 15. E-4 安装包集成（Fork 侧配置，不实际打包）
+
+### 15.1 electron-builder.yml
+- `win.extraResources` 新增 sidecar：`from: ${env.SIDECAR_EXE_PATH} → to: sidecar`（resources/sidecar/sidecar.exe）
+- 路径由企业受管版构建流水线（E-1）注入环境变量；官方版不设则该资源跳过
+
+### 15.2 nsis-installer.nsh（build/）
+- `customInstall`（受管构建）：写 `CHERRY_MANAGED_BUILD=1` 用户环境变量（CL5 受管标记）
+- `customUnInstall`（受管构建）：NSSM 停止/移除 Sidecar 服务 + 清理受管数据 + 删除受管标记（CL4）
+- 全部以 `MANAGED_BUILD` 编译期 define 守护，官方版不受影响
+
+### 15.3 受管标记
+- `CHERRY_MANAGED_BUILD=1` 环境变量（M1 已定，应用启动读取）
+- 本轮完成配置注入方式（customInstall 写入），不改 Fork 逻辑代码
+
+### 15.4 验收（AC5）
+| AC | 验收项 | 通过标准 |
+|----|--------|---------|
+| AC5 | E-4 集成配置 | electron-builder.yml 含 sidecar extraResources + nsis 卸载处理 + 受管标记 |
+
+> 实际 Windows 打包验证归 E-1/M4（本轮只做 Fork 侧配置集成）。

@@ -2,6 +2,8 @@
   "host": "0.0.0.0",
   "port": 2334,
   "token": "CHANGE_ME_managed_token",
+  "admin_user": "admin",
+  "admin_password_hash": "pbkdf2$100000$REPLACED_HASH_PLACEHOLDER",
   "db_path": "data/managed.db",
   "heartbeat_timeout": 60,
   "offline_queue": true,
