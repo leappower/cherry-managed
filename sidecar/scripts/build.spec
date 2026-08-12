@@ -23,13 +23,17 @@ _SIDECAR_DIR = _SPEC_DIR.parent          # sidecar/
 _PROJECT_ROOT = _SIDECAR_DIR.parent      # cherry-managed/
 
 # Sidecar 纯 Python 依赖（urllib/json/sqlite/threading 等为标准库，自动收集）
-# websocket-client 顶层包名为 websocket，需显式收集
-hiddenimports = collect_submodules("websocket")
+# websocket-client 顶层包名为 websocket，需显式收集。
+# AC1/B4：collect_submodules 覆盖 websocket 全部子模块（防隐式导入漏），
+# 同时显式列出契约要求的四名 hiddenimports（websocket + lib 三模块）。
+hiddenimports = ["websocket", "cherry_client", "ws_client", "fork_client"]
+hiddenimports += collect_submodules("websocket")
 
 # lib/ 子目录模块：sidecar.py 通过运行时 sys.path.insert 导入，PyInstaller
-# 编译期收集不到，需显式列出
+# 编译期收集不到，需显式列出（AC1 契约 + B1 兜底）
 for _m in ("cherry_client", "ws_client", "fork_client"):
-    hiddenimports.append(_m)
+    if _m not in hiddenimports:
+        hiddenimports.append(_m)
 
 a = Analysis(
     [str(_SIDECAR_DIR / "sidecar.py")],
@@ -37,12 +41,18 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(_SIDECAR_DIR / "config" / "sidecar.json"), "config"),
+        # B1 兜底：lib/ 同时作为 datas 内嵌到 _MEIPASS/lib/。
+        # 即便 hiddenimports 收集不全，打包后 sidecar.py 运行时
+        # sys.path.insert(_MEIPASS/lib) 仍能定位 lib 模块。
+        (str(_SIDECAR_DIR / "lib"), "lib"),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # B5：服务端依赖不打包进 sidecar（本机若安装了 fastapi/uvicorn/httpx/pytest
+    # 时强制排除，减小体积并避免误打包）。
+    excludes=["fastapi", "uvicorn", "httpx", "pytest"],
     noarchive=False,
 )
 
