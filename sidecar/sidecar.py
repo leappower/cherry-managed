@@ -461,13 +461,20 @@ def _install_service_windows() -> bool:
 
 
 def _find_nssm() -> Path | None:
-    """定位 nssm.exe：优先 _MEIPASS 同级/extraResources 内置，其次 PATH。"""
+    """定位 nssm.exe：优先 _MEIPASS 同级/extraResources 内置，其次 PATH。
+
+    安装器（NSIS）把 nssm.exe 放到 $INSTDIR\\resources\\sidecar\\nssm.exe；
+    PyInstaller onefile 下 sys.executable 即该目录下的 sidecar.exe，
+    故 sys.executable.parent / "nssm.exe" 天然覆盖此位置。此处再补一条
+    resources/sidecar 相对路径兜底，保证与 NSIS 卸载脚本的定位一致。
+    """
     meipass = getattr(sys, "_MEIPASS", None)
     candidates = []
     if meipass:
         candidates.append(Path(meipass) / "nssm.exe")
         candidates.append(Path(meipass) / "bin" / "nssm.exe")
     candidates.append(Path(sys.executable).parent / "nssm.exe")
+    candidates.append(Path(sys.executable).parent / "resources" / "sidecar" / "nssm.exe")
     for c in candidates:
         if c.exists():
             return c
