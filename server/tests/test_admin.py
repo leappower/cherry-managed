@@ -35,6 +35,13 @@ def _login_ok() -> str:
     return r.json()["token"]
 
 
+@pytest.fixture(autouse=True)
+def _reset_admin_lock():
+    """每个测试前清零登录失败计数/锁，隔离跨测试的限速状态。"""
+    main.admin_auth.reset_lock(ADMIN_USER)
+    yield
+
+
 class TestLogin:
     def test_wrong_password_rejected(self):
         r = client.post("/api/admin/login",
@@ -84,7 +91,7 @@ class TestAudit:
         conn.commit()
         tok = _login_ok()
         rows = client.get("/api/admin/audit_log",
-                          headers={"X-Admin-Token": tok}).json()
+                          headers={"X-Admin-Token": tok}).json()["items"]
         actions = [r["action"] for r in rows]
         assert "admin_login" in actions
         # 有对应的 admin_login_failed（登录成功前 test 里触发过，DB 非隔离）
@@ -100,9 +107,81 @@ class TestAudit:
                               "request_id": "req-audit-admin"})
         assert r.status_code == 200, r.text
         rows = client.get("/api/admin/audit_log",
-                          headers={"X-Admin-Token": tok}).json()
+                          headers={"X-Admin-Token": tok}).json()["items"]
         assert any(x["action"] == "dispatch_agent" and x["request_id"] == "req-audit-admin"
                    for x in rows)
+
+
+class TestRateLimit:
+    """登录失败限速：第 5 次失败锁定，第 6 次直接拒绝（锁 15 分钟）。"""
+
+    def _wrong_login(self):
+        return client.post("/api/admin/login",
+                           json={"username": ADMIN_USER, "password": "wrongpass"})
+
+    def test_5_failures_locks_then_6th_rejected(self):
+        main.admin_auth.reset_lock(ADMIN_USER)  # 隔离：清零上次测试可能残留的锁
+        # 前 4 次失败：普通 401
+        for i in range(4):
+            assert self._wrong_login().status_code == 401, i
+        # 第 5 次失败：仍 401（计数达成触发锁定），锁已生效
+        assert self._wrong_login().status_code == 401
+        # 第 6 次尝试：锁定期内直接拒绝，仍 401
+        assert self._wrong_login().status_code == 401
+        # 即便拿正确密码，锁定期内也应被拒（锁定态优先）
+        r = client.post("/api/admin/login",
+                        json={"username": ADMIN_USER, "password": ADMIN_PASS})
+        assert r.status_code == 401
+
+    def test_lock_expiry_allows_login(self):
+        auth = main.admin_auth
+        auth.reset_lock(ADMIN_USER)
+        # 触发锁定
+        for _ in range(5):
+            assert self._wrong_login().status_code == 401
+        # 直接改写内部 lock_until 让锁定立即过期（绕过对 LOCK_SECONDS 的依赖）
+        auth._fails[ADMIN_USER] = (auth._fails[ADMIN_USER][0], 0.0)
+        # 锁判定应返回 False，正确密码可登录
+        assert auth._is_locked(ADMIN_USER) is False
+        r = client.post("/api/admin/login",
+                        json={"username": ADMIN_USER, "password": ADMIN_PASS})
+        assert r.status_code == 200
+        auth.reset_lock(ADMIN_USER)
+
+
+class TestPagination:
+    """audit_log / devices 分页筛选：limit/offset/total 正确。"""
+
+    def test_audit_pagination_metadata(self):
+        tok = _login_ok()
+        # 确保有审计记录
+        conn = db.get_conn(main.DB_PATH)
+        conn.execute("DELETE FROM audit_log")
+        conn.commit()
+        tok2 = _login_ok()
+        body = client.get("/api/admin/audit_log", headers={"X-Admin-Token": tok2},
+                          params={"limit": 2, "offset": 0}).json()
+        assert "total" in body and "limit" in body and "offset" in body and "items" in body
+        assert body["limit"] == 2
+        assert body["offset"] == 0
+        assert len(body["items"]) == min(2, body["total"])
+
+    def test_audit_pagination_action_operator_filter(self):
+        tok = _login_ok()
+        # 筛选出 admin_login 记录
+        body = client.get("/api/admin/audit_log", headers={"X-Admin-Token": tok},
+                          params={"action": "admin_login"}).json()
+        assert body["total"] >= 1
+        assert all(i["action"] == "admin_login" for i in body["items"])
+
+    def test_devices_pagination_metadata(self):
+        tok = _login_ok()
+        body = client.get("/api/admin/devices", headers={"X-Admin-Token": tok},
+                          params={"limit": 5, "offset": 0}).json()
+        assert "total" in body and "limit" in body and "offset" in body and "items" in body
+        assert body["limit"] == 5
+        assert body["offset"] == 0
+        assert len(body["items"]) == min(5, body["total"])
 
 
 class TestAdminPage:

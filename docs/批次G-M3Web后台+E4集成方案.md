@@ -58,7 +58,7 @@
 
 ### 1.3 _load_config 用户级落盘改造
 - **当前**：`_load_config()` 读 `Path(__file__).parent/config/sidecar.json`，PyInstaller onefile 下 `__file__`→`_MEIPASS` 只读。
-- **改为**：优先读用户级 `%PROGRAMDATA%\CherryManaged\config.json`；不存在则用内嵌 `_MEIPASS/config/sidecar.json` 作为模板生成并落盘到用户级。兼容现有打包，支持运行时持久化。
+- **改为**：读取优先序 = **显式 `--config` 参数 > 用户级 `%PROGRAMDATA%\CherryManaged\config.json` > 内嵌 `_MEIPASS/config/sidecar.json` 模板**。不存在则用内嵌作为模板生成并落盘到用户级。兼容现有 `run --config`（批次E已有参数）+ 支持运行时持久化。
 - **device_id**：首启生成 = `managed-` + MachineGuid(`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`) + hostname hash；`hostname=socket.gethostname()`、`os="windows"`、`group` 用内嵌默认。
 - **server url/token**：构建时 CI 从 secrets(`SERVER_URL`/`DEVICE_TOKEN`) 写入打包 sidecar.json 的 server 段，**不硬编码进源码**。
 
@@ -93,7 +93,7 @@
 登录鉴权(PBKDF2+token)、/api/admin 全家族、/admin 静态页、审计写库、test_admin 10测试。**全部保留。**
 
 ### 2.2 真缺口补丁
-1. **登录失败限速**：`AdminAuth` 加失败计数（内存 dict：user→(count, lock_until)），连续 5 次失败锁 15 分钟；`login()` 校验锁定态。→ 对齐 v1.0 AC-M3-2。
+1. **登录失败限速**：`AdminAuth` 加失败计数（内存 dict：user→(count, lock_until)），**第 5 次失败即锁定，第 6 次尝试直接拒绝**，锁 15 分钟；`login()` 校验锁定态。内存态重启清零（单进程 FastAPI 可接受，不持久化）。→ 对齐 AC-M3-2。
 2. **审计/设备分页筛选**：`/api/admin/audit_log`、`/api/admin/devices` 加 `limit/offset/action/operator` 查询参数，返回分页元数据（total/limit/offset）+ 列表。→ 对齐审计官建议。
 3. **（明确决策）admin_user 表**：**不新增表**，复用现有 config 单管理员（避免双轨）。后续如需多用户再迁移（SDD §14 注明）。
 
@@ -131,7 +131,7 @@
 | AC-E4-3 | `run` 读用户级 config | 断言 register 上报，服务端 devices 表 online=1 |
 | AC-E4-4 | `_load_config` | 断言优先读用户级；缺失用内嵌模板生成落盘 |
 | AC-M3-1 | 未登录访问管理 API | 断言 401（无 token） |
-| AC-M3-2 | 连续 6 次错密码 | 断言第 6 次被锁 15 分钟（限速生效） |
+| AC-M3-2 | 连续 5 次错密码 + 第 6 次尝试 | 断言第 5 次失败即锁定，第 6 次尝试直接拒绝（限速生效） |
 | AC-M3-3 | 正确登录 + 派发操作 | 断言 audit_log 新增记录 |
 | AC-M3-4 | audit_log/devices 分页 | 断言 limit/offset 生效 + total 正确 |
 | AC-REG | pytest 回归 | sidecar 18 + server 全量（30+新增）全过零回归 |

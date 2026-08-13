@@ -14,9 +14,15 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 
 SCHEME = "pbkdf2"
 _ITERATIONS = 100_000
+
+
+def _now() -> float:
+    """monotonic 时间戳（限速锁定期用）。"""
+    return time.monotonic()
 
 
 def hash_password(password: str, iterations: int = _ITERATIONS) -> str:
@@ -50,19 +56,56 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 class AdminAuth:
-    """管理员会话管理（单管理员 + 内存 session 集合）。"""
+    """管理员会话管理（单管理员 + 内存 session 集合 + 登录失败限速）。
+
+    登录失败限速（对齐 AC-M3-2）：内存 dict user→(count, lock_until)。
+    第 5 次失败即锁定，第 6 次尝试直接拒绝，锁 15 分钟。
+    内存态重启清零（单进程 FastAPI 可接受，不持久化）。
+    """
+
+    MAX_FAILURES = 5
+    LOCK_SECONDS = 15 * 60  # 15 分钟
 
     def __init__(self, admin_user: str, admin_password_hash: str):
         self.admin_user = admin_user
         self.admin_password_hash = admin_password_hash
         self._sessions: set[str] = set()
+        self._fails: dict[str, tuple[int, float]] = {}  # user -> (count, lock_until)
+
+    def _is_locked(self, username: str) -> bool:
+        entry = self._fails.get(username)
+        if not entry:
+            return False
+        count, lock_until = entry
+        if lock_until and lock_until > _now():
+            return True
+        if lock_until and lock_until <= _now():
+            # 锁到期自动清零
+            self._fails.pop(username, None)
+            return False
+        return False
+
+    def _record_failure(self, username: str) -> None:
+        count, _ = self._fails.get(username, (0, 0.0))
+        count += 1
+        lock_until = _now() + self.LOCK_SECONDS if count >= self.MAX_FAILURES else 0.0
+        self._fails[username] = (count, lock_until)
 
     def login(self, username: str, password: str) -> str | None:
-        """校验用户名密码，成功返回新 session token，失败返回 None。"""
+        """校验用户名密码，成功返回新 session token，失败返回 None。
+
+        锁定态：未过锁定期直接拒绝（不计次数）；锁到期后清零重计。
+        """
+        if self._is_locked(username):
+            return None
         if username != self.admin_user:
+            self._record_failure(username)
             return None
         if not verify_password(password, self.admin_password_hash):
+            self._record_failure(username)
             return None
+        # 登录成功清零失败计数
+        self._fails.pop(username, None)
         token = secrets.token_urlsafe(32)
         self._sessions.add(token)
         return token
@@ -74,3 +117,8 @@ class AdminAuth:
     def logout(self, token: str) -> None:
         """注销 session（可选）。"""
         self._sessions.discard(token)
+
+    # 测试辅助：可注入时钟/清零
+    def reset_lock(self, username: str) -> None:
+        """清零某用户的失败计数与锁（测试用）。"""
+        self._fails.pop(username, None)

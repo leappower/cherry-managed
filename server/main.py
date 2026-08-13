@@ -199,10 +199,20 @@ async def admin_logout(token: str = Depends(require_admin)):
     return {"ok": True}
 
 
+def _pagination(limit: int | None, offset: int | None) -> tuple[int, int]:
+    """规范化分页参数：limit 默认 100（上限 500 防扫库），offset 默认 0。"""
+    limit = max(1, min(limit or 100, 500))
+    offset = max(0, offset or 0)
+    return limit, offset
+
+
 @app.get("/api/admin/devices", dependencies=[Depends(require_admin)])
-async def admin_devices():
-    """设备列表（含在线状态/分组）。"""
-    return ws_server.registry.get_all()
+async def admin_devices(limit: int | None = None, offset: int | None = None):
+    """设备列表（含在线状态/分组）+ 分页元数据（total/limit/offset）。"""
+    lim, off = _pagination(limit, offset)
+    all_devices = ws_server.registry.get_all()
+    return {"total": len(all_devices), "limit": lim, "offset": off,
+            "items": all_devices[off:off + lim]}
 
 
 @app.get("/api/admin/dispatch_log", dependencies=[Depends(require_admin)])
@@ -218,14 +228,29 @@ async def admin_usage(device_id: str | None = None):
 
 
 @app.get("/api/admin/audit_log", dependencies=[Depends(require_admin)])
-async def admin_audit_log():
-    """操作审计日志（D-2 核心）。"""
+async def admin_audit_log(limit: int | None = None, offset: int | None = None,
+                          action: str | None = None, operator: str | None = None):
+    """操作审计日志（D-2 核心）+ 分页/筛选（limit/offset/action/operator）。"""
+    lim, off = _pagination(limit, offset)
     conn = db.get_conn(DB_PATH)
+    where, params = [], []
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if operator:
+        where.append("operator = ?")
+        params.append(operator)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM audit_log{where_sql}", params
+    ).fetchone()[0]
     rows = conn.execute(
-        "SELECT id, operator, action, target, timestamp, request_id "
-        "FROM audit_log ORDER BY id DESC LIMIT 500"
+        f"SELECT id, operator, action, target, timestamp, request_id "
+        f"FROM audit_log{where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + [lim, off]
     ).fetchall()
-    return [dict(r) for r in rows]
+    return {"total": total, "limit": lim, "offset": off,
+            "items": [dict(r) for r in rows]}
 
 
 @app.get("/api/admin/reconcile", dependencies=[Depends(require_admin)])
