@@ -152,6 +152,67 @@ def test_dispatch_result_updates_status(tmp_db):
     assert dispatch.get_log("req-100")["status"] == "success"
 
 
+def test_online_dispatch_uses_send_json(tmp_db):
+    """在线派发：real starlette WebSocket 需 send_json（send(str) 会误判离线）。
+
+    用只实现 send_json 的 FakeWS（无 .send）模拟 starlette WebSocket，
+    验证 dispatch 走 send_json 分支且 online=True。
+    """
+    class StarletteLikeWS:
+        """仅实现 send_json，无 send(str) —— 模拟真实 starlette WebSocket。"""
+        def __init__(self):
+            self.sent = []
+        async def send_json(self, msg):
+            self.sent.append(msg)
+
+    reg = DeviceRegistry(tmp_db)
+    fake = StarletteLikeWS()
+    reg.attach("dev-001", fake)
+    dispatch = DispatchService(tmp_db, reg)
+
+    r = run(dispatch.dispatch_agent("dev-001", "create", {"name": "a"}, None, "req-online-json"))
+    assert r["online"] is True  # 走 send_json，不被误判为离线
+    assert fake.sent and fake.sent[0]["type"] == "dispatch_agent"
+
+
+def test_fetch_agent_files_online_idempotent(tmp_db):
+    """S-6b：fetch_agent_files 在线下发 + 幂等（同 request_id 不重复）。"""
+    reg = DeviceRegistry(tmp_db)
+    fake = FakeWS()
+    reg.attach("dev-001", fake)
+    dispatch = DispatchService(tmp_db, reg)
+
+    r1 = run(dispatch.fetch_agent_files("dev-001", "agent_a", ["D:/Agents/deployed"], "req-faf-1"))
+    r2 = run(dispatch.fetch_agent_files("dev-001", "agent_a", ["D:/Agents/deployed"], "req-faf-1"))
+    assert r1["created"] is True
+    assert r1["online"] is True
+    assert r2["created"] is False  # 幂等
+    # 消息带全部字段
+    msgs = [m for m in fake.out if isinstance(m, dict) and m.get("type") == "fetch_agent_files"]
+    assert msgs
+    assert msgs[0]["device_id"] == "dev-001"
+    assert msgs[0]["agent_id"] == "agent_a"
+    assert msgs[0]["accessible_paths"] == ["D:/Agents/deployed"]
+    assert msgs[0]["request_id"] == "req-faf-1"
+    conn = db.get_conn(tmp_db)
+    n = conn.execute(
+        "SELECT COUNT(*) c FROM dispatch_log WHERE request_id='req-faf-1'"
+    ).fetchone()["c"]
+    assert n == 1
+
+
+def test_fetch_agent_files_offline_enqueue(tmp_db):
+    """S-6b：fetch_agent_files 离线入队待重连补发。"""
+    reg = DeviceRegistry(tmp_db)
+    dispatch = DispatchService(tmp_db, reg)
+    OFFLINE_QUEUE.clear()
+
+    r = run(dispatch.fetch_agent_files("dev-off", "agent_b", [], "req-faf-off"))
+    assert r["online"] is False
+    assert any(did == "dev-off" and m.get("type") == "fetch_agent_files"
+               for did, m in OFFLINE_QUEUE)
+
+
 def test_reconnect_flush_offline(tmp_db):
     """重连：重连后补发离线指令（幂等），并从队列移除。"""
     reg = DeviceRegistry(tmp_db)

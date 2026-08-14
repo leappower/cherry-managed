@@ -154,6 +154,13 @@ class DispatchSkillsReq(BaseModel):
     request_id: str
 
 
+class FetchAgentFilesReq(BaseModel):
+    device_id: str
+    agent_id: str
+    accessible_paths: list[str] = []
+    request_id: str
+
+
 @app.post("/api/dispatch/agent")
 async def api_dispatch_agent(req: DispatchAgentReq):
     return await ws_server.dispatch.dispatch_agent(
@@ -172,6 +179,14 @@ async def api_dispatch_provider(req: DispatchProviderReq):
 async def api_dispatch_skills(req: DispatchSkillsReq):
     return await ws_server.dispatch.dispatch_skills(
         req.device_id, req.skills, req.request_id
+    )
+
+
+@app.post("/api/fetch-agent-files")
+async def api_fetch_agent_files(req: FetchAgentFilesReq):
+    """S-6b 工作目录采集触发：服务端 → Sidecar 下发 fetch_agent_files。"""
+    return await ws_server.dispatch.fetch_agent_files(
+        req.device_id, req.agent_id, req.accessible_paths, req.request_id
     )
 
 

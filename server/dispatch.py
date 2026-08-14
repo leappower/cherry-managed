@@ -58,7 +58,12 @@ class DispatchService:
         ws = self.registry.get_connection(device_id)
         if ws is not None:
             try:
-                await ws.send(json.dumps(message, ensure_ascii=False))
+                # starlette WebSocket 用 send_json（ASGI 消息需带 "type" 键，send(str) 会因
+                # string indices 异常被误判为离线）。FakeWS（单测）兼容 send_json。
+                if hasattr(ws, "send_json"):
+                    await ws.send_json(message)
+                else:
+                    await ws.send(json.dumps(message, ensure_ascii=False))
                 return True
             except Exception:
                 # 发送失败视为离线，走入队
@@ -117,6 +122,27 @@ class DispatchService:
         status = "success" if success else "fail"
         self._mark_status(request_id, status)
         db.audit(self.db_path, "sidecar", "dispatch_result", request_id, request_id)
+
+    async def fetch_agent_files(self, device_id: str, agent_id: str,
+                                accessible_paths: list[str],
+                                request_id: str) -> dict:
+        """S-6b 工作目录采集：服务端 → Sidecar 发起 fetch_agent_files。
+
+        幂等（同 request_id 不重复创建 dispatch_log）；
+        在线设备直接下发，离线入队待重连补发。
+        Sidecar 回 dispatch_result 带采集内容，由 confirm_result 更新状态。
+        """
+        created = self._create_log(request_id, device_id, "fetch_agent_files", "collect")
+        msg = {
+            "type": "fetch_agent_files",
+            "device_id": device_id,
+            "agent_id": agent_id,
+            "accessible_paths": accessible_paths,
+            "request_id": request_id,
+        }
+        online = await self._dispatch(request_id, device_id, msg)
+        db.audit(self.db_path, "server", "fetch_agent_files", f"{device_id}:{agent_id}", request_id)
+        return {"created": created, "online": online, "request_id": request_id}
 
     def get_log(self, request_id: str) -> dict | None:
         conn = db.get_conn(self.db_path)
