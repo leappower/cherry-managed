@@ -428,9 +428,19 @@ class SidecarRunner:
             self.ws.stop()
 
 
+def _run(cmd: list[str], *, check: bool = False, text: bool = True) -> subprocess.CompletedProcess:
+    """封装 subprocess.run：text=True 时统一 errors='replace'。
+
+    Windows 上 nssm/sc 的输出可能含非 gbk 可解码字节（中文错误信息、UTF-8 等），
+    默认 gbk 解码会抛 UnicodeDecodeError 并炸 _readerthread（实测 first-run 崩溃）。
+    errors='replace' 保证任何字节都能安全解码，不中断主流程。
+    """
+    return subprocess.run(cmd, capture_output=True, text=text, check=check, errors="replace")
+
+
 def _windows_service_exists() -> bool:
     try:
-        out = subprocess.run(["sc", "query", SERVICE_NAME], capture_output=True, text=True, check=False)
+        out = _run(["sc", "query", SERVICE_NAME], check=False)
         return "RUNNING" in out.stdout or "STOPPED" in out.stdout or "SERVICE_NAME" in out.stdout
     except OSError:
         return False
@@ -444,19 +454,21 @@ def _install_service_windows() -> bool:
         raise RuntimeError("NSSM 未内置（extraResources 应含 nssm.exe），中止注册")
     # 幂等更新：若已存在先停掉移除重建（对齐方案 §1.2 升级场景）
     if _windows_service_exists():
-        subprocess.run([str(nssm), "stop", SERVICE_NAME], capture_output=True, text=True, check=False)
-        subprocess.run([str(nssm), "remove", SERVICE_NAME, "confirm"], capture_output=True, text=True, check=False)
-    subprocess.run([str(nssm), "install", SERVICE_NAME, str(exe), "run"], capture_output=True, text=True, check=True)
-    subprocess.run([str(nssm), "set", SERVICE_NAME, "Start", "SERVICE_AUTO_START"], capture_output=True, text=True, check=True)
-    subprocess.run([str(nssm), "set", SERVICE_NAME, "AppExit", "Restart"], capture_output=True, text=True, check=True)
-    subprocess.run([str(nssm), "set", SERVICE_NAME, "AppRestartDelay", "5000"], capture_output=True, text=True, check=True)
+        _run([str(nssm), "stop", SERVICE_NAME], check=False)
+        _run([str(nssm), "remove", SERVICE_NAME, "confirm"], check=False)
+    _run([str(nssm), "install", SERVICE_NAME, str(exe), "run"], check=True)
+    _run([str(nssm), "set", SERVICE_NAME, "Start", "SERVICE_AUTO_START"], check=True)
+    # ⚠️ nssm 的 AppExit 需要「退出码+动作」两个子值，语法：
+    #   nssm set <service> AppExit <exit-code> <action>
+    #   单给动作 AppExit Restart 会返回 exit 1（缺退出码参数）→ 服务注册在最后阶段失败。
+    #   Default = 对所有未显式列出的退出码生效；Restart = 自动重启（崩溃自愈）。
+    _run([str(nssm), "set", SERVICE_NAME, "AppExit", "Default", "Restart"], check=True)
+    _run([str(nssm), "set", SERVICE_NAME, "AppRestartDelay", "5000"], check=True)
     log_dir = _user_config_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(nssm), "set", SERVICE_NAME, "AppStdout", str(log_dir / "sidecar.log")],
-                   capture_output=True, text=True, check=True)
-    subprocess.run([str(nssm), "set", SERVICE_NAME, "AppStderr", str(log_dir / "sidecar.err.log")],
-                   capture_output=True, text=True, check=True)
-    subprocess.run([str(nssm), "start", SERVICE_NAME], capture_output=True, text=True, check=True)
+    _run([str(nssm), "set", SERVICE_NAME, "AppStdout", str(log_dir / "sidecar.log")], check=True)
+    _run([str(nssm), "set", SERVICE_NAME, "AppStderr", str(log_dir / "sidecar.err.log")], check=True)
+    _run([str(nssm), "start", SERVICE_NAME], check=True)
     return True
 
 
@@ -478,7 +490,7 @@ def _find_nssm() -> Path | None:
     for c in candidates:
         if c.exists():
             return c
-    which = subprocess.run(["where", "nssm"], capture_output=True, text=True, check=False)
+    which = _run(["where", "nssm"], check=False)
     if which.returncode == 0 and which.stdout.strip():
         return Path(which.stdout.strip().splitlines()[0])
     return None
@@ -489,11 +501,11 @@ def _uninstall_service_windows() -> bool:
     nssm = _find_nssm()
     if _windows_service_exists():
         if nssm is not None:
-            subprocess.run([str(nssm), "stop", SERVICE_NAME], capture_output=True, text=True, check=False)
-            subprocess.run([str(nssm), "remove", SERVICE_NAME, "confirm"], capture_output=True, text=True, check=False)
+            _run([str(nssm), "stop", SERVICE_NAME], check=False)
+            _run([str(nssm), "remove", SERVICE_NAME, "confirm"], check=False)
         else:
-            subprocess.run(["sc", "stop", SERVICE_NAME], capture_output=True, text=True, check=False)
-            subprocess.run(["sc", "delete", SERVICE_NAME], capture_output=True, text=True, check=False)
+            _run(["sc", "stop", SERVICE_NAME], check=False)
+            _run(["sc", "delete", SERVICE_NAME], check=False)
     return not _windows_service_exists()
 
 
