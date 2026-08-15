@@ -535,6 +535,77 @@ def cmd_uninstall_service(args) -> int:
     return 0
 
 
+def cmd_discover(args) -> int:
+    """扫描局域网找受管服务端（批次H E）——UDP 广播 + 收集 ACK，打印候选。
+
+    供 NSIS 安装弹窗 / F 配置工具调用。匹配 ACK 后逐行打印 `IP:port`。
+    """
+    cfg = _load_config(getattr(args, "config", None) or None)
+    token = cfg.get("server", {}).get("token", "")
+    dport = int(cfg.get("discovery", {}).get("port", 2335))
+    timeout_ms = int(cfg.get("discovery", {}).get("timeout_ms", 2000))
+    broadcast = getattr(args, "broadcast", "255.255.255.255")
+
+    req = json.dumps({"type": "cherry-managed-discovery", "token": token}).encode("utf-8")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(timeout_ms / 1000.0)
+    found = []
+    try:
+        sock.sendto(req, (broadcast, dport))
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while time.monotonic() < deadline:
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                break
+            try:
+                msg = json.loads(data.decode("utf-8", errors="replace"))
+            except Exception:
+                continue
+            if msg.get("type") != "cherry-managed-discovery-ack":
+                continue
+            ip = msg.get("server_ip") or (addr[0] if addr else "")
+            port = msg.get("port", 2334)
+            found.append((ip, port, msg))
+    finally:
+        sock.close()
+
+    if found:
+        for ip, port, msg in found:
+            print(f"{ip}:{port}")
+            print(json.dumps(msg, ensure_ascii=False))
+        return 0
+    print("no-server-found")
+    return 1
+
+
+def cmd_set_server(args) -> int:
+    """把服务端地址写进用户级 config（批次H F）——`sidecar.exe set-server <ip> [port]`。"""
+    ip = getattr(args, "ip", None)
+    port = int(getattr(args, "port", 2334) or 2334)
+    if not ip:
+        logger.error("set-server 需要 --ip")
+        return 2
+    # 用户级 config：存在则读，不存在则用内嵌生成
+    user_cfg = _user_config_dir() / USER_CONFIG_FILE
+    if not user_cfg.exists():
+        embedded = _embedded_config()
+        if not embedded.exists():
+            logger.error("内嵌配置模板缺失: %s", embedded)
+            return 2
+        _user_config_dir().mkdir(parents=True, exist_ok=True)
+        with open(embedded, encoding="utf-8") as src, open(user_cfg, "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+    with open(user_cfg, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg.setdefault("server", {})["url"] = f"ws://{ip}:{port}/ws"
+    with open(user_cfg, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print(f"server.url -> {ip}:{port}  ({user_cfg})")
+    return 0
+
+
 def cmd_first_run(args) -> int:
     """首启：生成/读 device_id + 落盘用户级 config + 注册服务。"""
     embedded = _embedded_config()
@@ -589,6 +660,12 @@ def main(argv: list[str] | None = None) -> int:
     sp_first.add_argument("--config", default="")
     sub.add_parser("install-service", help="注册/更新服务")
     sub.add_parser("uninstall-service", help="停止并移除服务")
+    sp_discover = sub.add_parser("discover", help="扫描局域网找受管服务端(批次H E)")
+    sp_discover.add_argument("--config", default="")
+    sp_discover.add_argument("--broadcast", default="255.255.255.255")
+    sp_set = sub.add_parser("set-server", help="设置服务端地址并写用户级config(批次H F)")
+    sp_set.add_argument("--ip", required=True)
+    sp_set.add_argument("--port", default=2334)
 
     args = p.parse_args(argv)
     if args.cmd == "first-run":
@@ -603,6 +680,10 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s %(levelname)s %(name)s %(message)s")
         return cmd_uninstall_service(args)
+    if args.cmd == "discover":
+        return cmd_discover(args)
+    if args.cmd == "set-server":
+        return cmd_set_server(args)
     if args.cmd == "run":
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s %(levelname)s %(name)s %(message)s")

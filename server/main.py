@@ -26,6 +26,7 @@ import db
 import feed
 import auth as auth_mod
 from ws_server import WSServer
+import discovery as discovery_mod
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,6 +40,8 @@ DB_PATH = db.db_path_from_config(CONFIG.get("db_path", "data/managed.db"))
 db.init_db(DB_PATH)
 
 ws_server = WSServer(CONFIG, DB_PATH)
+
+discovery_server = discovery_mod.DiscoveryServer(CONFIG, host=CONFIG.get("host", "0.0.0.0"))
 
 # 批次D：D-2 Web 管理后台 —— 管理员鉴权
 admin_auth = auth_mod.AdminAuth(
@@ -59,7 +62,20 @@ if not PATCH_REPO_DIR.is_absolute():
     PATCH_REPO_DIR = SERVER_DIR / PATCH_REPO_DIR
 PATCH_REPO_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="CherryStudio 企业受管版 - 服务端", version="0.2.0-a0")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 批次H：UDP 局域网发现（E 扫描核心）随服务端同进程启动
+    await discovery_server.start()
+    try:
+        yield
+    finally:
+        await discovery_server.stop()
+
+
+app = FastAPI(title="CherryStudio 企业受管版 - 服务端", version="0.2.0-a0", lifespan=lifespan)
 
 # 静态挂载 patch_repo/ 供 electron-updater generic provider 拉取
 app.mount("/patch_repo", StaticFiles(directory=str(PATCH_REPO_DIR)), name="patch_repo")
