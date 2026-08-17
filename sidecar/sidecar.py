@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 # 批次 G (E-4)：用户级配置目录。
-#   Windows: %PROGRAMDATA%\CherryManaged\
+#   Windows: %APPDATA%\CherryManaged\
 #   Linux/macOS: ~/.config/CherryManaged/  (降级用 machine-id / hostname)
 USER_CONFIG_DIR_NAME = "CherryManaged"
 USER_CONFIG_FILE = "config.json"
@@ -123,9 +123,15 @@ def cmd_deploy(args):
 
 # ── S-1 主进程 ────────────────────────────────────────
 def _user_config_dir() -> Path:
-    """用户级配置目录：Windows 用 %PROGRAMDATA%\\CherryManaged，其余用 ~/.config/CherryManaged。"""
+    """用户级配置目录：Windows 用 %APPDATA%\\CherryManaged，其余用 ~/.config/CherryManaged。
+
+    用 %APPDATA%（Roaming，普通用户可写）而非 %PROGRAMDATA%（全局受保护）：
+    set-server / 首启配置在运行时由普通权限进程调用，写 ProgramData 会 PermissionError
+    （实测「写入服务端地址失败，请检查权限后重试」）。改 APPDATA 根治权限，
+    且卸载时由 NSIS 显式删除 %APPDATA%\\CherryManaged 实现「重装必重选服务端」。
+    """
     if os.name == "nt":
-        base = os.environ.get("PROGRAMDATA", str(Path(os.environ.get("SystemDrive", "C:")) / "ProgramData"))
+        base = os.environ.get("APPDATA", str(Path(os.environ.get("USERPROFILE", "C:")) / "AppData" / "Roaming"))
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / USER_CONFIG_DIR_NAME
