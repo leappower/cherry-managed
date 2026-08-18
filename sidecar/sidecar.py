@@ -235,6 +235,10 @@ class SidecarRunner:
                                    api_key=fork_cfg.get("api_key", ""))
         self.fork = ForkClient(base_url=fork_cfg.get("base_url", "http://127.0.0.1:23333"),
                                api_key=fork_cfg.get("api_key", ""))
+        # JJC-20260818-001：从 Fork loopback 路由拉取的 managed_key（SC-001 让
+        # /v1/admin/usage、/v1/admin/agents 不再 401）。空串表示尚未拉取到
+        # （如 Cherry 未启动），由周期任务重试，不崩溃。
+        self._managed_key = ""
         self.registry = ManagedRegistry(paths["managed_registry_db"])
 
         # 执行/采集/对账/自愈
@@ -264,12 +268,64 @@ class SidecarRunner:
         # 断线重连补发：把 pending 指令重新发给执行器
         self.healer.set_retry_cb(self._retry_dispatch)
 
+    # ---- JJC-20260818-001：managed_key 拉取 ----
+    def _fetch_managed_key(self) -> str:
+        """从 Fork loopback 只读路由拉取 managed_key。
+
+        GET http://127.0.0.1:23333/v1/admin/managed-key，带 X-Device-Id 自证
+        设备身份（服务端回环校验 + 405 非回环拒绝）。Cherry 未启动 / 路由不可达
+        时返回空串并记 warning，由调用方在下一个 reconcile/heartbeat 周期重试，
+        不崩溃。
+        """
+        import urllib.request
+        import urllib.error
+
+        fork = self.cfg.get("fork", {})
+        base = fork.get("base_url", "http://127.0.0.1:23333").rstrip("/")
+        url = base + "/v1/admin/managed-key"
+        req = urllib.request.Request(
+            url, headers={"X-Device-Id": self.device["device_id"]}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status != 200:
+                    logger.warning("拉取 managed_key 非 200: %s", resp.status)
+                    return ""
+                data = json.loads(resp.read().decode("utf-8"))
+                key = (data or {}).get("managed_key", "")
+                return key if isinstance(key, str) else ""
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+                json.JSONDecodeError) as e:
+            logger.warning("拉取 managed_key 失败(下次周期重试): %s", e)
+            return ""
+
+    def _ensure_managed_key(self) -> str:
+        """确保已持有 managed_key：拉取缓存(幂等)，空则拉一次并同步到 ForkClient。
+
+        拉到的 key 同时填入 ``fork_cfg["api_key"]`` 供 ForkClient 作 Bearer，
+        使 /v1/admin/usage(collect)、/v1/admin/agents(reconcile) 不再 401(SC-001)。
+        返回当前 managed_key（可能为空串）。
+        """
+        if self._managed_key:
+            return self._managed_key
+        key = self._fetch_managed_key()
+        if key:
+            self._managed_key = key
+            # 同步到 ForkClient 的 Bearer(默认空则首次写入；即便有 static api_key
+            # 也覆盖为受管 key，确保管理路由鉴权一致)。
+            self.fork.api_key = key
+            fork = self.cfg.get("fork", {})
+            fork["api_key"] = key
+        return self._managed_key
+
     # ---- 发送 -------
     def _send(self, data: dict) -> None:
         self.ws.send(data)
 
     def _register(self) -> None:
         srv = self.cfg["server"]
+        # 注册时一并拉取 managed_key(幂等缓存；未拉到则为空，由周期任务重试)。
+        managed_key = self._ensure_managed_key()
         msg = {
             "type": "register",
             "device_id": self.device["device_id"],
@@ -279,6 +335,7 @@ class SidecarRunner:
             "fork_version": self.cfg["cherry"].get("fork_version", ""),
             "group": self.device.get("group", ""),
             "token": srv.get("token", ""),
+            "managed_key": managed_key,
         }
         self._send(msg)
 
@@ -394,6 +451,9 @@ class SidecarRunner:
                 self._report_status()
                 last_status = now
             if now - last_recon >= recon_iv:
+                # JJC-20260818-001：managed_key 未拉到(如 Cherry 后启动)时在此
+                # reconcile 周期重试拉取，成功后同步给 ForkClient 供对账/采集鉴权。
+                self._ensure_managed_key()
                 self._reconcile()
                 last_recon = now
             time.sleep(5)

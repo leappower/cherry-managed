@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS devices (
     online        INTEGER DEFAULT 0,
     last_seen     TEXT,
     "group"       TEXT,
-    token         TEXT
+    token         TEXT,
+    managed_key   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dispatch_log (
@@ -102,13 +103,25 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 
 def init_db(db_path: Path | str) -> None:
-    """初始化数据仓库：建目录 + 建 5 张表。"""
+    """初始化数据仓库：建目录 + 建 5 张表 + 迁移。"""
     if isinstance(db_path, str):
         db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
+    _migrate_devices_managed_key(conn)
     conn.commit()
+
+
+def _migrate_devices_managed_key(conn) -> None:
+    """迁移：若 devices 表已存在但缺 managed_key 列，则补 ADD COLUMN（幂等）。
+
+    ``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表加列，故对升级场景需显式迁移；
+    幂等由「查 PRAGMA table_info 是否存在该列」保证。
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "managed_key" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN managed_key TEXT")
 
 
 def table_names(db_path: Path | str) -> list[str]:

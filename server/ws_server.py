@@ -97,6 +97,7 @@ class WSServer:
                 fork_version=first.get("fork_version"),
                 group=first.get("group"),
                 token=first.get("token", ""),
+                managed_key=first.get("managed_key"),
             )
             self._conns[device_id] = websocket
             await websocket.send_json({"type": "register_ack", "device_id": device_id})
@@ -189,6 +190,11 @@ class WSServer:
 @register_handler("register")
 async def _on_register(server, websocket, device_id, msg):
     server.registry.set_online(device_id)
+    # JJC-20260818-001：周期/重连的 register 消息可携带最新 managed_key，转发落库
+    # （幂等：仅在 msg 显式携带非空值时才更新，避免空值冲掉已登记 key）。
+    managed_key = msg.get("managed_key")
+    if managed_key:
+        server.registry.set_managed_key(device_id, managed_key)
 
 
 @register_handler("dispatch_result")
