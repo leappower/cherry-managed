@@ -433,34 +433,34 @@ class SidecarRunner:
 
     # ---- 指令处理 ----
     def _handle_dispatch_agent(self, msg: dict) -> None:
-        rid = msg.get("request_id")
+        rid = msg.get("request_id") or ""
         result = self.dispatch.handle_dispatch_agent(
             action=msg.get("action", "create"), agent=msg.get("agent", {}),
             package_url=msg.get("package_url"), request_id=rid,
             metadata=msg.get("metadata"), resources=msg.get("resources"),
             skills=msg.get("skills"))
         self.healer.track_pending(rid, msg)
-        self.healer.on_dispatch_result(rid, result.get("success"), result.get("error"))
+        self.healer.on_dispatch_result(rid, bool(result.get("success")), result.get("error"))
         self._send({"type": "dispatch_result", "request_id": rid,
                     "success": result.get("success"), "error": result.get("error"),
                     "result": result})
 
     def _handle_dispatch_provider(self, msg: dict) -> None:
-        rid = msg.get("request_id")
+        rid = msg.get("request_id") or ""
         result = self.dispatch.handle_dispatch_provider(
             action=msg.get("action", "add"), provider=msg.get("provider", {}),
             request_id=rid)
         self.healer.track_pending(rid, msg)
-        self.healer.on_dispatch_result(rid, result.get("success"), result.get("error"))
+        self.healer.on_dispatch_result(rid, bool(result.get("success")), result.get("error"))
         self._send({"type": "dispatch_result", "request_id": rid,
                     "success": result.get("success"), "error": result.get("error"),
                     "result": result})
 
     def _handle_dispatch_skills(self, msg: dict) -> None:
-        rid = msg.get("request_id")
+        rid = msg.get("request_id") or ""
         result = self.dispatch.handle_dispatch_skills(msg.get("skills", []), request_id=rid)
         self.healer.track_pending(rid, msg)
-        self.healer.on_dispatch_result(rid, result.get("success"), None)
+        self.healer.on_dispatch_result(rid, bool(result.get("success")), None)
         self._send({"type": "dispatch_result", "request_id": rid,
                     "success": result.get("success"), "error": None, "result": result})
 

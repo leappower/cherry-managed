@@ -14,7 +14,7 @@ import logging
 import time
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]  # 环境缺 types-PyYAML 存根(非源码类型错误)
 
 logger = logging.getLogger(__name__)
 
