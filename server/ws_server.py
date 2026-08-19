@@ -128,9 +128,25 @@ class WSServer:
                 self._conns.pop(device_id, None)
 
     def _authorize(self, msg: dict) -> bool:
-        """token 校验（timing-safe 风格）。"""
+        """设备级鉴权（JJC-20260818-001）。
+
+        规则：
+          - 首条消息必须为 register，否则拒绝。
+          - **已绑定设备**：按 devices[device_id].managed_key 做 timing-safe 比对
+            （设备级专属 key，不再是全局一把静态 token）；错 key 拒绝/断开(401 语义)。
+          - **未绑定/首次申领**：保留全局注册 token 校验（首登申领一次，绑定后切换专属
+            key），向后兼容不影响现有连接。
+        """
         if msg.get("type") != "register":
             return False
+        device_id = msg.get("device_id", "")
+        if not device_id:
+            return False
+        # 已登记设备的首条 register：按设备专属 managed_key 校验（timing-safe）。
+        bound = self.registry.get(device_id)
+        if bound and bound.get("managed_key"):
+            return self._timing_safe(msg.get("managed_key", ""), bound["managed_key"])
+        # 未绑定/首次：保留全局注册 token 校验（首登申领，绑定后走专属 key）。
         supplied = msg.get("token", "")
         return self._timing_safe(supplied, self.token)
 
