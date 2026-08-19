@@ -90,9 +90,9 @@ class DiscoveryServer:
         try:
             hostname = socket.gethostname()
             for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-                ip = info[4][0]
-                if not ip.startswith("127."):
-                    return ip
+                ip = info[4][0]  # type: ignore[union-attr]
+                if not ip.startswith("127."):  # type: ignore[union-attr]
+                    return ip  # type: ignore[return-value]
         except Exception:
             pass
         return "127.0.0.1"

@@ -175,9 +175,9 @@ def _device_fingerprint() -> str:
     if os.name == "nt":
         guid = ""
         try:
-            import winreg  # noqa: PLC0415
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\\Microsoft\\Cryptography") as k:
-                guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+            import winreg  # noqa: PLC0415  # type: ignore[attr-defined]  # Windows-only 模块，Linux mypy 无存根
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\\Microsoft\\Cryptography") as k:  # type: ignore[attr-defined]
+                guid, _ = winreg.QueryValueEx(k, "MachineGuid")  # type: ignore[attr-defined]
         except OSError:
             guid = ""
         h.update((guid or host).encode("utf-8", "replace"))
@@ -405,6 +405,9 @@ class SidecarRunner:
 
     def _on_message(self, msg: dict) -> None:
         mtype = msg.get("type")
+        if not isinstance(mtype, str):
+            # 缺 type 字段：不处理不回发（防循环）
+            return
         # ack/pong 等回执类消息：静默忽略，不报错也不回发（防止 error 风暴）
         if mtype in ("register_ack", "usage_ack", "status_ack", "agent_files_ack",
                      "dispatch_result_ack", "pong", "not_implemented"):

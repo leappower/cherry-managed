@@ -184,6 +184,9 @@ class WSServer:
     async def _route(self, websocket, device_id: str, msg: dict) -> None:
         """按 type 分发到 handler。"""
         msg_type = msg.get("type")
+        if not isinstance(msg_type, str):
+            await websocket.send_json({"type": "error", "error": "missing_type"})
+            return
         if msg_type == "ping":
             await websocket.send_json({"type": "pong", "ts": _now()})
             return

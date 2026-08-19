@@ -433,12 +433,13 @@ async def admin_agent_config_rollback(name: str, rev: int,
 
 async def _push_agents(name: str, req: AgentPushReq, token: str):
     """推送/升级/灰度/回滚主逻辑（AC2/AC4）。"""
-    if _repo.get_config(name) is None:
+    cfg = _repo.get_config(name)
+    if cfg is None:
         raise HTTPException(status_code=404, detail="agent 配置不存在")
     if _repo.is_locked(name):
         raise HTTPException(status_code=400, detail="agent 已锁定（灰度/维护期禁推）")
     # 目标 rev：缺省取最新；指定历史 rev 即回滚
-    target_rev = req.target_rev or _repo.get_config(name)["latest_rev"]
+    target_rev = req.target_rev or cfg["latest_rev"]
     version_rec = _repo.get_version(name, target_rev)
     if version_rec is None:
         raise HTTPException(status_code=404, detail=f"rev {target_rev} 不存在")

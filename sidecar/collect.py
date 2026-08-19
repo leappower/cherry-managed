@@ -145,6 +145,7 @@ class Collector:
                 skipped.append({"path": str(item), "reason": "超过单次采集上限"})
                 continue
             path = item.get("path") if isinstance(item, dict) else str(item)
+            path = str(path) if path is not None else ""
             norm = _norm(path)
             if not self._in_whitelist(norm, whitelist):
                 skipped.append({"path": path, "reason": "越权：不在 accessible_paths 白名单内"})

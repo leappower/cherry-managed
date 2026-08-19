@@ -87,7 +87,10 @@ class AgentRepo:
         )
         conn.commit()
         db.audit(self.db_path, created_by or "admin", "agent_config_create", f"{name}:rev1", None)
-        return self.get_version(name, 1)
+        rec = self.get_version(name, 1)
+        if rec is None:  # 刚写入必存在（防御性，满足类型标注）
+            raise RuntimeError(f"create_config 后取回版本失败: {name}:1")
+        return rec
 
     def update_config(self, name: str, pkg: dict, created_by: str | None = None) -> dict:
         """更新 Agent 配置：rev+1（原子递增），写新版本历史，更新最新态。
@@ -119,7 +122,10 @@ class AgentRepo:
         )
         conn.commit()
         db.audit(self.db_path, created_by or "admin", "agent_config_update", f"{name}:rev{next_rev}", None)
-        return self.get_version(name, next_rev)
+        rec = self.get_version(name, next_rev)
+        if rec is None:  # 刚写入必存在（防御性，满足类型标注）
+            raise RuntimeError(f"update_config 后取回版本失败: {name}:{next_rev}")
+        return rec
 
     # ---- 查询 ----
     def get_version(self, name: str, rev: int) -> dict | None:

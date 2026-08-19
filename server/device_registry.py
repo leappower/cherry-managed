@@ -84,7 +84,10 @@ class DeviceRegistry:
              token, managed_key),
         )
         conn.commit()
-        return self.get(device_id)
+        rec = self.get(device_id)
+        if rec is None:  # 刚插入必存在（防御性，满足类型标注）
+            raise RuntimeError(f"register 后取回设备失败: {device_id}")
+        return rec
 
     def set_managed_key(self, device_id: str, managed_key: str) -> None:
         """更新设备的 managed_key（JJC-20260818-001）。非空才写（幂等）。"""

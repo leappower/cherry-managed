@@ -37,10 +37,26 @@ class ReconcileService:
         return [dict(r) for r in rows]
 
     def reconcile_summary(self) -> dict:
-        """汇总对账所需的期望状态（供 Sidecar 拉取比对）。"""
+        """汇总对账所需的期望状态（供 Sidecar 拉取比对）。
+
+        JJC-20260819-001 方案B（§3.5）：新增 expected_agent_configs（期望最新 rev）
+        与 device_deploy（当前 deploy_status），供按 rev 对账。向后兼容：无
+        deploy_status 的存量设备由 Sidecar 侧退化为内容比对（双轨）。
+        """
+        from agent_repo import AgentRepo
+
+        repo = AgentRepo(self.db_path)
+        expected = []
+        for cfg in repo.list_configs():
+            expected.append({
+                "agent_name": cfg["name"], "latest_rev": cfg["latest_rev"],
+                "version": cfg.get("version"), "locked": bool(cfg["locked"]),
+            })
         return {
             "expected_devices": self.expected_devices(),
             "expected_dispatches": self.expected_dispatches(),
+            "expected_agent_configs": expected,
+            "device_deploy": repo.list_deploys(),
             "generated_at": _now(),
         }
 

@@ -122,7 +122,7 @@ class SelfHealer:
             # 重试：重新调用派发（由主循环注入重试执行器）
             if self.retry_cb:
                 try:
-                    result = self.retry_cb(request_id, rec.get("message"))
+                    result = self.retry_cb(request_id, rec.get("message") or {})
                     retried += 1
                     if result and result.get("success"):
                         succeeded += 1
