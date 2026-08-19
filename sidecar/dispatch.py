@@ -16,6 +16,7 @@ SDD §3.2/3.3/3.9 + §4.3 dispatch_log：
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import threading
@@ -27,6 +28,36 @@ logger = logging.getLogger("sidecar.dispatch")
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _canonical_json(obj: Any) -> str:
+    """确定性序列化（对齐服务端 agent_repo.canonical_json，用于哈希对账）。"""
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def verify_sha256(metadata: dict | None, agent: dict,
+                  resources: dict | None = None, skills: list | None = None) -> bool:
+    """JJC-20260819-001 方案B：按服务端 recipe 校验推送包内容指纹。
+
+    对齐服务端 ``agent_repo.compute_sha256``（name→rev→canonical(agent)→
+    resources(路径字典序)→skills(id 字典序)）。metadata 带 sha256 时校验；
+    否则（旧载荷/缺字段）跳过（退化为不校验，向后兼容）。
+    """
+    meta = metadata or {}
+    exp = meta.get("sha256")
+    if not exp:
+        return True  # 无期望哈希：不校验（兼容老派发）
+    md = hashlib.sha256()
+    md.update(b"name=" + str(meta.get("name", "")).encode("utf-8"))
+    md.update(b"|rev=" + str(meta.get("rev", "")).encode("utf-8"))
+    md.update(b"|" + _canonical_json(agent).encode("utf-8"))
+    for path in sorted((resources or {}).keys()):
+        md.update(b"|resources:" + str(path).encode("utf-8") + b"="
+                  + str((resources or {}).get(path, "")).encode("utf-8"))
+    for sk in sorted(skills or [], key=lambda s: str(s.get("id", ""))):
+        md.update(b"|skills:" + str(sk.get("id", "")).encode("utf-8") + b"="
+                  + str(sk.get("content", "")).encode("utf-8"))
+    return md.hexdigest() == exp
 
 
 class DispatchExecutor:
@@ -123,21 +154,37 @@ class DispatchExecutor:
     # =========================================================
     def handle_dispatch_agent(self, action: str, agent: dict,
                               package_url: Optional[str] = None,
-                              request_id: str | None = None) -> dict:
+                              request_id: str | None = None,
+                              metadata: dict | None = None,
+                              resources: dict | None = None,
+                              skills: list | None = None) -> dict:
         """执行 Agent 派发（create/update/delete/disable）。
 
         action:
           - create : create_agent → mark_managed('agent', id)
-          - update : patch_agent/put_agent → mark_managed('agent', id)
+          - update : **无条件 put_agent（PUT 全量）**（P1 约定，防升级不删字段）
+                     → mark_managed('agent', id)；回执含 deployed_rev/version
           - delete : delete_agent → unmark('agent', id)
           - disable: 标记禁用（官方无 disable API 时落盘禁用标记）→ unmark 视策略
 
-        返回 {success, action, kind, agent_id, error, idempotent}
+        JJC-20260819-001 方案B：
+          - 推送载荷带 metadata(resources/skills) 时先 verify_sha256，不通过 →
+            报错 hash_mismatch 且不落盘、不调 API（回执 success=false）。
+          - 回执 ``deployed_rev / deployed_version`` 来自 metadata（对账锚点）。
+
+        返回 {success, action, kind, agent_id, error, idempotent, deployed_rev, ...}
         """
         if request_id and self._check_idempotent(request_id):
             logger.info("幂等跳过: request_id=%s", request_id)
             return self._result(True, action, "agent", agent.get("id"),
                                 idempotent=True)
+        # 内容指纹校验（scheme 6.2 修复 + 2.6）：不通过则不落盘不调 API
+        if not verify_sha256(metadata, agent, resources, skills):
+            logger.warning("sha256 校验失败: %s", metadata.get("sha256") if metadata else None)
+            return self._result(False, action, "agent", agent.get("id"),
+                                error="hash_mismatch", idempotent=False,
+                                **self._log(request_id, "agent", action, None, "hash_mismatch"))
+        meta = metadata or {}
         try:
             if action == "create":
                 payload = dict(agent)
@@ -147,27 +194,34 @@ class DispatchExecutor:
                 agent_id = self._extract_id(resp, agent)
                 self.registry.mark_managed("agent", agent_id)
                 return self._result(True, action, "agent", agent_id,
-                                    idempotent=False, **self._log(request_id, "agent", action, agent_id))
+                                    idempotent=False,
+                                    deployed_name=meta.get("name"),
+                                    deployed_rev=meta.get("rev"),
+                                    deployed_version=meta.get("version"),
+                                    **self._log(request_id, "agent", action, agent_id))
 
             if action == "update":
                 agent_id = self._resolve_id(agent)
                 payload = dict(agent)
-                # 全量更新优先 put，带 package_url 走 put
-                if package_url:
-                    payload["package_url"] = package_url
-                    resp = self.cherry.put_agent(agent_id, payload)
-                else:
-                    resp = self.cherry.patch_agent(agent_id, payload)
+                # P1（审计固化）：update 对 agent 配置体【无条件走 put_agent（PUT 全量）】，
+                # 不沿用「有 package_url 走 put_agent 否则走 patch_agent」的启发式。
+                # PATCH（部分更新）不删已移除字段，会造成「升级不删配置」BUG。
+                self.cherry.put_agent(agent_id, payload)
                 self.registry.mark_managed("agent", agent_id)
                 return self._result(True, action, "agent", agent_id,
-                                    idempotent=False, **self._log(request_id, "agent", action, agent_id))
+                                    idempotent=False,
+                                    deployed_name=meta.get("name"),
+                                    deployed_rev=meta.get("rev"),
+                                    deployed_version=meta.get("version"),
+                                    **self._log(request_id, "agent", action, agent_id))
 
             if action == "delete":
                 agent_id = self._resolve_id(agent)
                 self.cherry.delete_agent(agent_id)
                 self.registry.unmark("agent", agent_id)
                 return self._result(True, action, "agent", agent_id,
-                                    idempotent=False, **self._log(request_id, "agent", action, agent_id))
+                                    idempotent=False,
+                                    **self._log(request_id, "agent", action, agent_id))
 
             if action == "disable":
                 agent_id = self._resolve_id(agent)
@@ -176,7 +230,8 @@ class DispatchExecutor:
                 # 禁用视作回收受管保护（隐藏，避免误删）
                 self.registry.unmark("agent", agent_id)
                 return self._result(True, action, "agent", agent_id,
-                                    idempotent=False, **self._log(request_id, "agent", action, agent_id))
+                                    idempotent=False,
+                                    **self._log(request_id, "agent", action, agent_id))
 
             return self._result(False, action, "agent", agent.get("id"),
                                 error=f"未知 action: {action}", idempotent=False,

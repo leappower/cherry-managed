@@ -362,6 +362,11 @@ class SidecarRunner:
             self.fork.api_key = key
             fork = self.cfg.get("fork", {})
             fork["api_key"] = key
+            # JJC-20260819-001 方案B：同一把受管管理 key 同步给 CherryClient（受管模式
+            # Bearer），使 /v1/admin/agents、/v1/admin/skills、/v1/admin/mcp 不再 401/403
+            # （断链修复）。两把 key 职责分离：此处是「受管版 /v1/admin/* 的管理 key」，
+            # 区别于仅用于 WS 绑定鉴权的设备级 managed_key（JJC-20260818-001）。
+            self.cherry.api_key = key
         return self._managed_key
 
     # ---- 发送 -------
@@ -428,7 +433,9 @@ class SidecarRunner:
         rid = msg.get("request_id")
         result = self.dispatch.handle_dispatch_agent(
             action=msg.get("action", "create"), agent=msg.get("agent", {}),
-            package_url=msg.get("package_url"), request_id=rid)
+            package_url=msg.get("package_url"), request_id=rid,
+            metadata=msg.get("metadata"), resources=msg.get("resources"),
+            skills=msg.get("skills"))
         self.healer.track_pending(rid, msg)
         self.healer.on_dispatch_result(rid, result.get("success"), result.get("error"))
         self._send({"type": "dispatch_result", "request_id": rid,
@@ -472,7 +479,9 @@ class SidecarRunner:
         if mtype == "dispatch_agent":
             return self.dispatch.handle_dispatch_agent(
                 action=message.get("action", "create"), agent=message.get("agent", {}),
-                package_url=message.get("package_url"), request_id=request_id)
+                package_url=message.get("package_url"), request_id=request_id,
+                metadata=message.get("metadata"), resources=message.get("resources"),
+                skills=message.get("skills"))
         if mtype == "dispatch_provider":
             return self.dispatch.handle_dispatch_provider(
                 action=message.get("action", "add"),
