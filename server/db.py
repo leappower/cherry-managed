@@ -99,17 +99,53 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp  TEXT,
     request_id TEXT
 );
+
+-- JJC-20260819-001 方案B：Agent 配置化推送 + 版本管理（3 新表）
+-- 1) Agent 配置最新态（按 name 主键）
+CREATE TABLE IF NOT EXISTS agent_configs (
+    name        TEXT PRIMARY KEY,
+    latest_rev  INTEGER,
+    latest_sha  TEXT,
+    updated_at  TEXT,
+    locked      INTEGER DEFAULT 0
+);
+
+-- 2) 版本历史（一 Agent 多版本）
+CREATE TABLE IF NOT EXISTS agent_versions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    rev        INTEGER NOT NULL,
+    version    TEXT NOT NULL,
+    config     TEXT NOT NULL,
+    sha256     TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT,
+    build_info TEXT,
+    UNIQUE(name, rev)
+);
+
+-- 3) 设备级部署状态（对账锚点）
+CREATE TABLE IF NOT EXISTS deploy_status (
+    device_id  TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    rev        INTEGER NOT NULL,
+    version    TEXT,
+    sha256     TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (device_id, agent_name)
+);
 """
 
 
 def init_db(db_path: Path | str) -> None:
-    """初始化数据仓库：建目录 + 建 5 张表 + 迁移。"""
+    """初始化数据仓库：建目录 + 建 8 张表 + 迁移。"""
     if isinstance(db_path, str):
         db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
     _migrate_devices_managed_key(conn)
+    _migrate_agent_repo(conn)
     conn.commit()
 
 
@@ -122,6 +158,17 @@ def _migrate_devices_managed_key(conn) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
     if "managed_key" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN managed_key TEXT")
+
+
+def _migrate_agent_repo(conn) -> None:
+    """迁移：老库若已有 agent_versions 但缺列则补（幂等，兼容老库升级场景）。"""
+    for table, col in (("agent_versions", "build_info"),):
+        try:
+            cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.OperationalError:
+            continue  # 表不存在（新库由 SCHEMA 建），跳过
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
 
 
 def table_names(db_path: Path | str) -> list[str]:
