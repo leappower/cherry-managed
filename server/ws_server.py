@@ -215,12 +215,28 @@ async def _on_register(server, websocket, device_id, msg):
 
 @register_handler("dispatch_result")
 async def _on_dispatch_result(server, websocket, device_id, msg):
-    """SDD §3.6：派发回执。"""
-    server.dispatch.confirm_result(
-        msg.get("request_id", ""),
-        bool(msg.get("success")),
-        msg.get("error"),
-    )
+    """SDD §3.6：派发回执。
+
+    JJC-20260819-001 方案B：Agent 配置派发回执带 ``deployed_rev/version/name``
+    （在 result 字典），成功时落 deploy_status 作对账锚点。
+    """
+    res = (msg.get("result") or {}) if isinstance(msg.get("result"), dict) else {}
+    agent_name = res.get("deployed_name")
+    rev = res.get("deployed_rev")
+    version = res.get("deployed_version")
+    if agent_name and rev is not None:
+        server.dispatch.confirm_agent_deploy(
+            msg.get("request_id", ""), bool(msg.get("success")),
+            agent_name=agent_name, rev=int(rev) if str(rev).isdigit() else None,
+            version=version, sha256=None, device_id=device_id,
+            error=msg.get("error"),
+        )
+    else:
+        server.dispatch.confirm_result(
+            msg.get("request_id", ""),
+            bool(msg.get("success")),
+            msg.get("error"),
+        )
     await websocket.send_json({"type": "dispatch_result_ack", "request_id": msg.get("request_id")})
 
 

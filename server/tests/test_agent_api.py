@@ -195,3 +195,22 @@ class TestPush:
             assert r.status_code == 400
         finally:
             repo.set_locked("财务助理", False)
+
+    def test_confirm_agent_deploy_records_deploy_status(self, token):
+        """回执带 deployed_rev → confirm_agent_deploy 落 deploy_status（对账锚点）。"""
+        h = {"X-Admin-Token": token}
+        client.post("/api/admin/agent-configs", json=_pkg(), headers=h)
+        # 模拟设备回执：deployed_rev=1 到达
+        main.ws_server.dispatch.confirm_agent_deploy(
+            "req-deploy-1", True, agent_name="财务助理", rev=1,
+            version="1.0.0", sha256="x", device_id="dev-40")
+        from agent_repo import AgentRepo
+        dep = AgentRepo(main.DB_PATH).get_deploy("dev-40", "财务助理")
+        assert dep is not None
+        assert dep["rev"] == 1 and dep["version"] == "1.0.0"
+        # 若设备已部署最新 rev，if_changed push 应跳过（skipped_unchanged>0）
+        r = client.post("/api/admin/push/agents", headers=h,
+                        json={"agent_name": "财务助理", "devices": ["dev-40"],
+                              "if_changed": True, "target_rev": 1})
+        data = r.json()["data"]
+        assert data["dispatch"]["skipped_unchanged"] == 1
