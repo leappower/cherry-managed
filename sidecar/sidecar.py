@@ -32,6 +32,9 @@ from pathlib import Path
 USER_CONFIG_DIR_NAME = "CherryManaged"
 USER_CONFIG_FILE = "config.json"
 USER_DEVICE_FILE = "device.json"
+# JJC-20260818-001：设备级受管密钥独立文件（不混入 device.json，避免误提交）。
+# 存用户级配置目录，权限收紧 0600/0400。
+MANAGED_KEY_FILE = "managed_key"
 SERVICE_NAME = "CherrySidecar"
 # 内嵌模板在 PyInstaller onefile 下位于 _MEIPASS/config/sidecar.json
 EMBEDDED_CONFIG_REL = "config/sidecar.json"
@@ -210,6 +213,49 @@ def _load_or_create_device(cfg: dict) -> dict:
     return d
 
 
+def _managed_key_file() -> Path:
+    """设备级 managed_key 落盘路径：用户级配置目录下独立文件（JJC-20260818-001）。"""
+    return _user_config_dir() / MANAGED_KEY_FILE
+
+
+def _managed_key() -> str:
+    """读取/生成设备级受管密钥（JJC-20260818-001）。
+
+    幂等：独立文件存在则直接读取（重启进程 key 不变）；否则用
+    ``secrets.token_urlsafe(32)`` 生成唯一 key 并落盘独立文件。
+    落盘权限收紧为 0600（POSIX）/ 显式收紧 0400（Windows 尽量），
+    敏感 key 不写日志、不混入 device.json。
+
+    返回 managed_key（32 字节 urlsafe token，约 43 字符）。
+    """
+    import secrets  # noqa: PLC0415
+
+    mkf = _managed_key_file()
+    if mkf.exists():
+        try:
+            key = mkf.read_text(encoding="utf-8").strip()
+        except OSError:  # pragma: no cover - 读失败降级重新生成
+            key = ""
+        if key:
+            return key
+    # 生成并落盘（幂等：仅当文件缺失/空才写）
+    key = secrets.token_urlsafe(32)
+    mkf.parent.mkdir(parents=True, exist_ok=True)
+    tmp = mkf.with_name(mkf.name + ".tmp")
+    tmp.write_text(key + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)  # 0600：owner 可读写；POSIX 收紧
+    except OSError:  # pragma: no cover - Windows 无 POSIX 权限模型
+        pass
+    # 原子替换：先落 tmp 再 rename，避免半写完的 key 被并发读取
+    os.replace(tmp, mkf)
+    try:
+        os.chmod(mkf, 0o600)
+    except OSError:  # pragma: no cover - Windows 无 POSIX 权限模型
+        pass
+    return key
+
+
 class SidecarRunner:
     """常驻主进程：组装各模块 + 指令路由 + 定时采集/对账/自愈。"""
 
@@ -324,8 +370,9 @@ class SidecarRunner:
 
     def _register(self) -> None:
         srv = self.cfg["server"]
-        # 注册时一并拉取 managed_key(幂等缓存；未拉到则为空，由周期任务重试)。
-        managed_key = self._ensure_managed_key()
+        # JJC-20260818-001：上报设备级受管密钥（本地幂等生成，设备↔服务器 WS 绑定凭据，
+        # 非 Serve 拉取的 Fork 管理 key）。与 device_id 同报，服务器按 device 登记/核验。
+        managed_key = _managed_key()
         msg = {
             "type": "register",
             "device_id": self.device["device_id"],
@@ -698,9 +745,12 @@ def cmd_first_run(args) -> int:
     cfg.setdefault("device", {}).update(dev)
     with open(user_cfg, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+    # JJC-20260818-001：首启生成/读设备级受管密钥（幂等，独立文件 0600）。
+    mk = _managed_key()
     print(f"device_id={dev['device_id']}")
     print(f"config    ={user_cfg}")
     print(f"device    ={_user_config_dir() / USER_DEVICE_FILE}")
+    print(f"managed_key={_managed_key_file()} (len={len(mk)})")
     # 触发安装服务（跨平台分支）
     cmd_install_service(args)
     return 0
