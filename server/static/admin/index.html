@@ -35,6 +35,20 @@
   .hidden { display: none; }
   .msg { font-size: 13px; margin-left: 12px; color: #6b7280; }
   pre { background: #1f2937; color: #e5e7eb; padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  /* 推送Agent Tab */
+  .push-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
+  .card h3 { font-size: 14px; margin-bottom: 10px; }
+  .pkg-row { padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+  .pkg-row.selected { border-color: #2563eb; background: #eff6ff; }
+  .pkg-name { font-weight: 600; }
+  .dev-list { max-height: 260px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; }
+  .dev-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 13px; }
+  select, input[type=text] { padding: 7px 9px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+  .push-actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+  .result { margin-top: 12px; }
+  .res-ok { background: #dcfce7; color: #166534; }
+  .res-fail { background: #fee2e2; color: #b91c1c; }
 </style>
 </head>
 <body>
@@ -71,6 +85,7 @@
         <div class="tab" data-tab="usage">用量</div>
         <div class="tab" data-tab="audit">审计日志</div>
         <div class="tab" data-tab="agents">Agent 清单</div>
+        <div class="tab" data-tab="push">推送Agent</div>
         <div class="tab" data-tab="reconcile">对账</div>
       </div>
 
@@ -164,6 +179,119 @@ function renderTable(rows, cols) {
   return html;
 }
 
+// ---- 推送Agent Tab（JJC-20260819-001 方案B）----
+let pushState = { pkg: null, rev: null };
+
+function pushCard(label, inner) {
+  return '<div class="card"><h3>' + label + '</h3>' + inner + '</div>';
+}
+
+async function loadPush() {
+  const packs = (await api('/api/admin/agent-configs')).data || [];
+  const devs = (await api('/api/admin/devices')).items || [];
+  let pkgHtml = '<div>';
+  if (!packs.length) {
+    pkgHtml += '<span class="muted">尚无 Agent 配置包。先创建配置包再推送。</span>';
+  } else {
+    packs.forEach((p) => {
+      const selCls = pushState.pkg && p.name === pushState.pkg ? ' selected' : '';
+      pkgHtml += '<div class="pkg-row' + selCls + '" data-name="' + esc(p.name) +
+        '" onclick="selectPushPkg(this)"><span class="pkg-name">' + esc(p.name) +
+        '</span><span class="muted">rev' + esc(p.latest_rev) + ' v' + esc(p.version) +
+        (p.locked ? ' 🔒' : '') + '</span></div>';
+    });
+  }
+  pkgHtml += '</div>';
+
+  let revOpts = ['<option value="">' + (pushState.rev ? 'rev' + pushState.rev : '— 选择包 —') + '</option>'];
+  if (pushState.pkg) {
+    const ver = (await api('/api/admin/agent-configs/' + encodeURIComponent(pushState.pkg) + '/versions')).data || [];
+    ver.forEach((v) => {
+      revOpts.push('<option value="' + v.rev + '"' + (pushState.rev === v.rev ? ' selected' : '') +
+        '>rev' + v.rev + ' · v' + esc(v.version) + '</option>');
+    });
+  }
+
+  let devHtml = '<div class="dev-list">';
+  if (!devs.length) {
+    devHtml += '<span class="muted">无在线/已注册设备</span>';
+  } else {
+    devs.forEach((d) => {
+      devHtml += '<label class="dev-item"><input type="checkbox" class="dev-chk" value="' +
+        esc(d.device_id) + '">' + esc(d.device_id) + ' <span class="muted">' + esc(d.hostname) +
+        (d.online ? ' · 在线' : ' · 离线') + ' · ' + esc(d.group || '') + '</span></label>';
+    });
+  }
+  devHtml += '</div>';
+
+  const left = pushCard('① Agent 配置包（选一个查看版本）', pkgHtml) +
+    pushCard('② 目标版本（默认最新；历史 rev 即回滚）',
+      '<select id="rev-select" onchange="pushState.rev=parseInt(this.value)||null">' + revOpts.join('') + '</select>' +
+      '<div class="muted">锁定 🔒 的包禁止推送；选历史 rev 推送 = 回滚（仅覆盖 agent 主体）</div>');
+  const right = pushCard('③ 推送目标设备（勾选）', devHtml) +
+    pushCard('④ 推送',
+      '<div class="push-actions">' +
+      '<label class="muted"><input type="checkbox" id="if-changed" checked> 仅推变更设备</label>' +
+      '<button onclick="doPush()">推送</button>' +
+      '<button class="secondary" onclick="pushState={pkg:null,rev:null};loadTab(\'push\')">重置</button>' +
+      '</div><div class="result" id="push-result"></div>');
+  return '<div class="push-grid">' + left + right + '</div>';
+}
+
+function selectPushPkg(el) {
+  pushState.pkg = el.dataset.name;
+  pushState.rev = null;
+  loadTab('push');
+}
+
+async function doPush() {
+  const box = $('push-result');
+  if (!pushState.pkg) { box.innerHTML = '<div class="res-fail">请先选择配置包</div>'; return; }
+  const devs = Array.from(document.querySelectorAll('.dev-chk:checked')).map((c) => c.value);
+  if (!devs.length) { box.innerHTML = '<div class="res-fail">请勾选至少一台目标设备</div>'; return; }
+  const body = {
+    agent_name: pushState.pkg,
+    devices: devs,
+    target_rev: pushState.rev || undefined,
+    if_changed: !!$('if-changed').checked,
+    reason: 'admin UI push'
+  };
+  box.innerHTML = '<span class="muted">推送中…</span>';
+  try {
+    const r = await api('/api/admin/push/agents', { method: 'POST', body: JSON.stringify(body) });
+    const d = r.data;
+    box.innerHTML = '<div class="res-ok">已推送 ' + esc(d.agent_name) + ' @rev' + esc(d.target_rev) +
+      ' → ' + (d.request_ids || []).length + ' 台设备（在线' + d.dispatch.online_sent +
+      ' / 离线' + d.dispatch.offline_queued + ' / 跳过' + d.dispatch.skipped_unchanged + '）</div>' +
+      '<pre>' + esc(JSON.stringify(d.request_ids, null, 2)) + '</pre>';
+    pollPushJobs(d.request_ids || []);
+  } catch (e) {
+    box.innerHTML = '<div class="res-fail">推送失败: ' + esc(e.message || e) + '</div>';
+  }
+}
+
+let pollTimer = null;
+function pollPushJobs(rids) {
+  if (pollTimer) clearInterval(pollTimer);
+  let tries = 0;
+  pollTimer = setInterval(async () => {
+    tries++;
+    try {
+      const rows = (await api('/api/admin/push/jobs')).data || [];
+      const hits = rows.filter((r) => rids.indexOf(r.request_id) >= 0);
+      const box = $('push-result');
+      if (hits.length) {
+        box.innerHTML += '<table><thead><tr><th>request_id</th><th>设备</th><th>状态</th></tr></thead><tbody>' +
+          hits.map((h) => '<tr><td>' + esc(h.request_id) + '</td><td>' + esc(h.device_id) +
+            '</td><td class="' + (h.status === 'success' ? 'res-ok' : (h.status === 'fail' ? 'res-fail' : '')) +
+            '">' + esc(h.status) + '</td></tr>').join('') + '</tbody></table>';
+      }
+      const allDone = hits.length && hits.every((h) => h.status === 'success' || h.status === 'fail');
+      if (allDone || tries > 40) { clearInterval(pollTimer); pollTimer = null; }
+    } catch (e) { /* 轮询失败静默，下次重试 */ }
+  }, 3000);
+}
+
 async function loadTab(tab) {
   const c = $('content');
   c.innerHTML = '<span class="muted">加载中…</span>';
@@ -217,6 +345,8 @@ async function loadTab(tab) {
         { key: 'agent_id', label: 'Agent' },
         { key: 'file_count', label: '文件数' }
       ]);
+    } else if (tab === 'push') {
+      c.innerHTML = await loadPush();
     } else if (tab === 'reconcile') {
       const data = await api('/api/admin/reconcile');
       c.innerHTML = '<pre>' + esc(JSON.stringify(data, null, 2)) + '</pre>';
