@@ -88,6 +88,37 @@ class DispatchService:
         db.audit(self.db_path, "server", "dispatch_agent", device_id, request_id)
         return {"created": created, "online": online, "request_id": request_id}
 
+    async def dispatch_agent_config(self, device_id: str, agent: dict,
+                                    metadata: dict, resources: dict | None,
+                                    skills: list, package_url: str | None,
+                                    request_id: str) -> dict:
+        """JJC-20260819-001 方案B：按配置单元+版本号下发 Agent。
+
+        载荷含 ``agent_name``(agent.name) / ``config``(agent 主体) / ``rev``(metadata.rev)
+        以及 resources/skills（skills 仍走独立通道语义，payload 内含引用但不混入配置自身）。
+        对账锚点：设备侧回执 ``deployed_rev`` 由 sidecar 上报。
+        """
+        created = self._create_log(request_id, device_id, "dispatch_agent", "update")
+        msg = {
+            "type": "dispatch_agent",
+            "action": "update",
+            "agent": agent,          # config 主体
+            "agent_name": agent.get("name", ""),
+            "config": agent,         # 与 agent 同体，明确「配置单元」语义
+            "rev": metadata.get("rev"),
+            "version": metadata.get("version", ""),
+            "metadata": metadata,
+            "resources": resources or {},
+            # skills 引用随配置下发（独立通道：完整 skill 包走 dispatch_skills）
+            "skills": skills or [],
+            "package_url": package_url,
+            "request_id": request_id,
+        }
+        online = await self._dispatch(request_id, device_id, msg)
+        db.audit(self.db_path, "server", "dispatch_agent_config",
+                 f"{metadata.get('name')}:rev{metadata.get('rev')}->{device_id}", request_id)
+        return {"created": created, "online": online, "request_id": request_id}
+
     async def dispatch_provider(self, device_id: str, action: str, provider: dict,
                                 request_id: str) -> dict:
         """派发 Provider。SDD §3.3。"""
@@ -122,6 +153,22 @@ class DispatchService:
         status = "success" if success else "fail"
         self._mark_status(request_id, status)
         db.audit(self.db_path, "sidecar", "dispatch_result", request_id, request_id)
+
+    def confirm_agent_deploy(self, request_id: str, success: bool,
+                             agent_name: str | None = None, rev: int | None = None,
+                             version: str | None = None, sha256: str | None = None,
+                             device_id: str | None = None, error: str | None = None) -> None:
+        """JJC-20260819-001：Agent 配置派发回执（含已部署 rev），更新 dispatch_log + deploy_status。
+
+        sidecar 回 ``dispatch_result(result={deployed_rev, deployed_version, deployed_sha})``；
+        成功时按 {device_id, agent_name} 落 deploy_status（对账锚点）。
+        """
+        self.confirm_result(request_id, success, error)
+        if success and agent_name and rev is not None:
+            from agent_repo import AgentRepo
+
+            repo = AgentRepo(self.db_path)
+            repo.record_deploy(device_id or "", agent_name, rev, version, sha256)
 
     async def fetch_agent_files(self, device_id: str, agent_id: str,
                                 accessible_paths: list[str],

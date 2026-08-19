@@ -177,6 +177,29 @@ class FetchAgentFilesReq(BaseModel):
     request_id: str
 
 
+# ---- JJC-20260819-001 方案B：Agent 配置包 / 推送 / 回滚请求模型 ----
+class AgentConfigReq(BaseModel):
+    """创建/更新 Agent 配置包（顶层 agent_config 对象）。"""
+    metadata: dict
+    agent: dict
+    resources: dict | None = None
+    skills: list | None = None
+    mcp: list | None = None
+    providers: list | None = None
+    attachments: list | None = None
+
+
+class AgentPushReq(BaseModel):
+    """推送/升级/灰度/回滚主端点请求。"""
+    agent_name: str
+    devices: list[str] | None = None
+    group: str | None = None
+    target_rev: int | None = None
+    if_changed: bool = False
+    reason: str | None = None
+    operator: str | None = None
+
+
 @app.post("/api/dispatch/agent")
 async def api_dispatch_agent(req: DispatchAgentReq):
     return await ws_server.dispatch.dispatch_agent(
@@ -323,6 +346,170 @@ async def admin_dispatch_skills(req: DispatchSkillsReq):
     return await ws_server.dispatch.dispatch_skills(
         req.device_id, req.skills, req.request_id
     )
+
+
+# ============ JJC-20260819-001 方案B：Agent 配置化推送 + 版本管理 API ============
+from agent_repo import AgentRepo, validate_pkg, version_semver_ok  # noqa: E402
+import schemas  # noqa: E402
+
+_repo = AgentRepo(DB_PATH)
+
+
+@app.get("/api/admin/agent-configs", dependencies=[Depends(require_admin)])
+async def admin_agent_configs():
+    """AC1/AC6：配置包列表（name/rev/version/updated_at/locked）。"""
+    return {"ok": True, "data": _repo.list_configs()}
+
+
+@app.post("/api/admin/agent-configs", dependencies=[Depends(require_admin)],
+          status_code=201)
+async def admin_agent_config_create(req: AgentConfigReq,
+                                    token: str = Depends(require_admin)):
+    """AC1：创建配置包（rev=1），返回新版本记录。"""
+    pkg = req.model_dump(exclude_none=True)
+    errors = validate_pkg(pkg)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    ver = pkg.get("metadata", {}).get("version", "1.0.0")
+    if not version_semver_ok(ver):
+        raise HTTPException(status_code=400, detail=f"version 非法语义化版本: {ver}")
+    if _repo.get_config(pkg["metadata"]["name"]):
+        raise HTTPException(status_code=409, detail="agent 已存在，请用 PUT 更新")
+    rec = _repo.create_config(pkg, admin_auth.admin_user)
+    return {"ok": True, "data": rec}
+
+
+@app.get("/api/admin/agent-configs/{name}", dependencies=[Depends(require_admin)])
+async def admin_agent_config_get(name: str):
+    """包详情（最新态 + 最新版本内容）。"""
+    cfg = _repo.get_config(name)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    return {"ok": True, "data": cfg}
+
+
+@app.put("/api/admin/agent-configs/{name}", dependencies=[Depends(require_admin)])
+async def admin_agent_config_update(name: str, req: AgentConfigReq,
+                                    token: str = Depends(require_admin)):
+    """AC1/AC6：更新配置 → 产生新 rev（原子递增），历史保留。"""
+    if _repo.get_config(name) is None:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    pkg = req.model_dump(exclude_none=True)
+    pkg.setdefault("metadata", {})["name"] = name
+    errors = validate_pkg(pkg)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    ver = pkg.get("metadata", {}).get("version", "")
+    if ver and not version_semver_ok(ver):
+        raise HTTPException(status_code=400, detail=f"version 非法语义化版本: {ver}")
+    rec = _repo.update_config(name, pkg, admin_auth.admin_user)
+    return {"ok": True, "data": rec}
+
+
+@app.get("/api/admin/agent-configs/{name}/versions", dependencies=[Depends(require_admin)])
+async def admin_agent_config_versions(name: str):
+    """AC1/AC6：版本历史（rev 倒序）。"""
+    if _repo.get_config(name) is None:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    return {"ok": True, "data": _repo.list_versions(name)}
+
+
+@app.post("/api/admin/agent-configs/{name}/rollback-to/{rev}",
+          dependencies=[Depends(require_admin)])
+async def admin_agent_config_rollback(name: str, rev: int,
+                                      req: schemas.RollbackReq | None = None,
+                                      token: str = Depends(require_admin)):
+    """AC4：回滚 —— 指定历史 rev → 向目标设备下发 → 设备恢复到该版本。
+
+    复用 push 逻辑（target_rev=rev）。响应含各设备 request_id/dispatch 统计。
+    body 可选（devices/group/reason），缺省即按该 agent 全部已部署设备。
+    """
+    return await _push_agents(name, AgentPushReq(
+        agent_name=name, devices=(req.devices if req else None),
+        group=(req.group if req else None), target_rev=rev,
+        reason=(req.reason if req and req.reason else "rollback"),
+    ), token)
+
+
+async def _push_agents(name: str, req: AgentPushReq, token: str):
+    """推送/升级/灰度/回滚主逻辑（AC2/AC4）。"""
+    if _repo.get_config(name) is None:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    if _repo.is_locked(name):
+        raise HTTPException(status_code=400, detail="agent 已锁定（灰度/维护期禁推）")
+    # 目标 rev：缺省取最新；指定历史 rev 即回滚
+    target_rev = req.target_rev or _repo.get_config(name)["latest_rev"]
+    version_rec = _repo.get_version(name, target_rev)
+    if version_rec is None:
+        raise HTTPException(status_code=404, detail=f"rev {target_rev} 不存在")
+    pkg = version_rec["config"]
+    # 目标设备：devices 或 group 二选一
+    targets = _resolve_push_targets(req)
+    if not targets:
+        raise HTTPException(status_code=400, detail="未指定目标设备（devices 或 group）")
+    operator = req.operator or admin_auth.admin_user
+    dispatched = []
+    sent = queued = skipped = 0
+    for device_id in targets:
+        # if_changed：仅对 deploy_status.rev < target_rev 的设备下发
+        if req.if_changed:
+            dep = _repo.get_deploy(device_id, name)
+            if dep and dep["rev"] >= target_rev:
+                skipped += 1
+                continue
+        rid = f"req-{name}-{target_rev}-{_now_short()}"
+        res = await ws_server.dispatch.dispatch_agent_config(
+            device_id, pkg.get("agent", {}), pkg.get("metadata", {}),
+            pkg.get("resources"), pkg.get("skills") or [], None, rid,
+        )
+        dispatched.append(rid)
+        sent += 1 if res["online"] else 0
+        queued += 0 if res["online"] else 1
+    db.audit(DB_PATH, operator, "agent_push", f"{name}:rev{target_rev}->{len(targets)}dev", None)
+    return {"ok": True, "data": {
+        "request_ids": dispatched, "agent_name": name, "target_rev": target_rev,
+        "dispatch": {"total": len(dispatched), "online_sent": sent,
+                      "offline_queued": queued, "skipped_unchanged": skipped}}}
+
+
+def _resolve_push_targets(req: AgentPushReq) -> list[str]:
+    """解析推送目标：devices 列表优先，否则按 group 匹配。"""
+    if req.devices:
+        return req.devices
+    if req.group:
+        all_dev = ws_server.registry.get_all()
+        return [d["device_id"] for d in all_dev if d.get("group") == req.group]
+    return []
+
+
+def _now_short() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%H%M%S%f")[:15]
+
+
+@app.post("/api/admin/push/agents", dependencies=[Depends(require_admin)])
+async def admin_push_agents(req: AgentPushReq, token: str = Depends(require_admin)):
+    """推送/升级/灰度/回滚主端点（AC2/AC4）。"""
+    return await _push_agents(req.agent_name, req, token)
+
+
+@app.get("/api/admin/push/jobs", dependencies=[Depends(require_admin)])
+async def admin_push_jobs(request_id: str | None = None):
+    """推送任务列表/单任务详情（含每设备回执状态）。"""
+    conn = db.get_conn(DB_PATH)
+    if request_id:
+        row = conn.execute(
+            "SELECT request_id, device_id, type, action, status, created_at "
+            "FROM dispatch_log WHERE request_id=?", (request_id,),
+        ).fetchone()
+        return {"ok": True, "data": dict(row) if row else None}
+    rows = conn.execute(
+        "SELECT request_id, device_id, type, action, status, created_at "
+        "FROM dispatch_log WHERE action='update' OR type='dispatch_agent' "
+        "ORDER BY created_at DESC LIMIT 100"
+    ).fetchall()
+    return {"ok": True, "data": [dict(r) for r in rows]}
 
 
 @app.websocket("/ws")
