@@ -40,11 +40,15 @@ jobs:
         shell: bash
         run: |
           cd sidecar
-          pyinstaller --clean --noconfirm --onefile \
-            --specpath scripts \
+          # ⚠️ 不能带 --onefile / --specpath：这两个是 makespec-only 选项，
+          # 直接传 .spec 时 PyInstaller 报 "makespec options not valid when a .spec file is given"，
+          # 导致每次构建必失败（见 fork-win-build.yml 同款注释）。正确写法只传 --distpath/--workpath。
+          pyinstaller --clean --noconfirm \
             --distpath ../dist --workpath ../build \
             scripts/build.spec
           ls -la ../dist/
+          # 明确校验产物存在；缺失即 fail
+          test -f ../dist/sidecar.exe
 
       - name: Smoke test (help)
         shell: bash
