@@ -9,7 +9,6 @@ on:
   push:
     tags:
       - 'v*'
-  push:
     branches:
       - master
     paths:
