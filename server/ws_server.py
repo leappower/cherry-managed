@@ -89,6 +89,13 @@ class WSServer:
 
             device_id = first["device_id"]
             self.registry.attach(device_id, websocket)
+            # 内网 IP：优先取 WS 对端地址（问题3），供派发日志/设备表显示。
+            peer_ip = ""
+            try:
+                if hasattr(websocket, "client") and websocket.client:
+                    peer_ip = getattr(websocket.client, "host", "") or ""
+            except Exception:  # noqa: BLE001
+                peer_ip = ""
             self.registry.register(
                 device_id=device_id,
                 hostname=first.get("hostname", ""),
@@ -98,6 +105,7 @@ class WSServer:
                 group=first.get("group"),
                 token=first.get("token", ""),
                 managed_key=first.get("managed_key"),
+                ip=peer_ip,
             )
             self._conns[device_id] = websocket
             await websocket.send_json({"type": "register_ack", "device_id": device_id})

@@ -271,8 +271,15 @@ async def admin_devices(limit: int | None = None, offset: int | None = None):
 
 @app.get("/api/admin/dispatch_log", dependencies=[Depends(require_admin)])
 async def admin_dispatch_log():
-    """派发日志。"""
-    return await list_dispatch_log()
+    """派发日志（含设备内网 IP，问题3）。"""
+    conn = db.get_conn(DB_PATH)
+    rows = conn.execute(
+        "SELECT d.request_id, d.device_id, d.type, d.action, d.status, d.created_at,"
+        "       dev.ip AS ip, dev.hostname AS hostname, dev.remark AS remark "
+        "FROM dispatch_log d LEFT JOIN devices dev ON dev.device_id = d.device_id "
+        "ORDER BY d.created_at DESC LIMIT 500"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/api/admin/usage", dependencies=[Depends(require_admin)])
@@ -313,13 +320,26 @@ async def admin_reconcile():
     return await reconcile()
 
 
+@app.put("/api/admin/devices/{device_id}/remark", dependencies=[Depends(require_admin)])
+async def admin_device_remark(device_id: str, body: dict):
+    """设置设备备注（问题3：设备ID解析调优）。body: {"remark": "..."}。"""
+    remark = (body or {}).get("remark", "")
+    if not isinstance(remark, str):
+        return {"ok": False, "error": "remark must be str"}
+    ws_server.registry.set_remark(device_id, remark)
+    db.audit(DB_PATH, "admin", "device_remark", f"{device_id}->{remark}", None)
+    return {"ok": True, "device_id": device_id, "remark": remark}
+
+
 @app.get("/api/admin/agents", dependencies=[Depends(require_admin)])
 async def admin_agents():
-    """各设备 Agent 清单（透传 agent_files 聚合）。"""
+    """各设备 Agent 清单（agent_files 聚合 + 设备 IP/备注，问题3）。"""
     conn = db.get_conn(DB_PATH)
     rows = conn.execute(
-        "SELECT DISTINCT device_id, agent_id, COUNT(*) AS file_count "
-        "FROM agent_files GROUP BY device_id, agent_id ORDER BY device_id, agent_id"
+        "SELECT a.device_id, a.agent_id, COUNT(*) AS file_count, "
+        "       dev.ip AS ip, dev.remark AS remark "
+        "FROM agent_files a LEFT JOIN devices dev ON dev.device_id = a.device_id "
+        "GROUP BY a.device_id, a.agent_id ORDER BY a.device_id, a.agent_id"
     ).fetchall()
     return [dict(r) for r in rows]
 

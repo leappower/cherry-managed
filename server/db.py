@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen     TEXT,
     "group"       TEXT,
     token         TEXT,
-    managed_key   TEXT
+    managed_key   TEXT,
+    ip            TEXT,
+    remark        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dispatch_log (
@@ -145,6 +147,7 @@ def init_db(db_path: Path | str) -> None:
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
     _migrate_devices_managed_key(conn)
+    _migrate_devices_remark_ip(conn)
     _migrate_agent_repo(conn)
     conn.commit()
 
@@ -158,6 +161,19 @@ def _migrate_devices_managed_key(conn) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
     if "managed_key" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN managed_key TEXT")
+
+
+def _migrate_devices_remark_ip(conn) -> None:
+    """迁移：老库 devices 表若缺 ip/remark 列则补 ADD COLUMN（幂等）。
+
+    与 _migrate_devices_managed_key 同模式：CREATE TABLE IF NOT EXISTS 不会给已存在
+    的表加列，故对升级场景需显式迁移，幂等由 PRAGMA table_info 保证。
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "ip" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN ip TEXT")
+    if "remark" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN remark TEXT")
 
 
 def _migrate_agent_repo(conn) -> None:

@@ -49,6 +49,9 @@
   .result { margin-top: 12px; }
   .res-ok { background: #dcfce7; color: #166534; }
   .res-fail { background: #fee2e2; color: #b91c1c; }
+  .remark-in { border: 1px solid transparent; background: transparent; padding: 2px 4px; font-size: 13px; width: 100%; border-radius: 4px; }
+  .remark-in:hover, .remark-in:focus { border-color: #d1d5db; background: #fff; }
+
 </style>
 </head>
 <body>
@@ -95,6 +98,7 @@
 
 <script>
 const TOKEN_KEY = 'CHERRY_ADMIN_TOKEN';
+const TAB_KEY = 'CHERRY_ADMIN_ACTIVE_TAB';
 let token = localStorage.getItem(TOKEN_KEY) || null;
 let currentUser = localStorage.getItem('cherry_admin_user') || null;
 
@@ -115,7 +119,9 @@ function showPanel() {
   $('login-view').classList.add('hidden');
   $('panel-view').classList.remove('hidden');
   $('who').textContent = '管理员: ' + currentUser;
-  loadTab('devices');
+  const saved = localStorage.getItem(TAB_KEY) || 'devices';
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === saved));
+  loadTab(saved);
 }
 
 function logoutUI(msg) {
@@ -156,9 +162,34 @@ document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
     tab.classList.add('active');
+    localStorage.setItem(TAB_KEY, tab.dataset.tab);
     loadTab(tab.dataset.tab);
   });
 });
+
+// 兼容后端两种返回：{ total,limit,offset,items:[...] } 包装 与 裸数组（问题2修复）
+function apiList(res) { return Array.isArray(res) ? res : ((res && res.items) || []); }
+
+// 问题3：设备显示 —— 有备注显示备注，无备注显示 device_id；设备列含 IP
+function displayDevice(r) {
+  const label = (r.remark && String(r.remark).trim()) ? r.remark : r.device_id;
+  return '<span title="' + esc(r.device_id) + '">' + esc(label) + '</span>';
+}
+
+function remarkCell(r) {
+  const v = r.remark || '';
+  return '<input class="remark-in" data-dev="' + esc(r.device_id) + '" value="' + esc(v) + '" placeholder="添加备注" onchange="saveRemark(this)">';
+}
+
+async function saveRemark(input) {
+  const dev = input.dataset.dev;
+  const val = input.value.trim();
+  try {
+    await api('/api/admin/devices/' + encodeURIComponent(dev) + '/remark', {
+      method: 'PUT', body: JSON.stringify({ remark: val })
+    });
+  } catch (e) { alert('保存备注失败: ' + (e.message || e)); }
+}
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -170,8 +201,11 @@ function renderTable(rows, cols) {
   rows.forEach((r) => {
     html += '<tr>';
     cols.forEach((c) => {
-      const v = c.key.startsWith('!') ? c.fn(r[c.key.slice(1)]) : r[c.key];
-      html += '<td>' + esc(v) + '</td>';
+      const raw = c.key.startsWith('!');
+      const v = raw
+        ? (c.fn ? c.fn(r) : r[c.key.slice(1)])
+        : r[c.key];
+      html += '<td>' + (raw ? v : esc(v)) + '</td>';
     });
     html += '</tr>';
   });
@@ -297,30 +331,34 @@ async function loadTab(tab) {
   c.innerHTML = '<span class="muted">加载中…</span>';
   try {
     if (tab === 'devices') {
-      const rows = await api('/api/admin/devices');
+      const res = await api('/api/admin/devices');
+      const rows = apiList(res);
       c.innerHTML = renderTable(rows, [
+        { key: '!device_label', label: '设备', fn: (r) => displayDevice(r) },
         { key: 'device_id', label: '设备ID' },
+        { key: 'ip', label: '内网IP' },
         { key: 'hostname', label: '主机名' },
         { key: 'os', label: '系统' },
         { key: 'group', label: '分组' },
-        { key: 'fork_version', label: 'Fork 版本' },
         { key: 'online', label: '状态', fn: (v) => (v ? '在线' : '离线') },
+        { key: '!remark', label: '备注', fn: (r) => remarkCell(r) },
         { key: 'last_seen', label: '最近在线' }
       ]);
     } else if (tab === 'dispatch') {
-      const rows = await api('/api/admin/dispatch_log');
+      const rows = apiList(await api('/api/admin/dispatch_log'));
       c.innerHTML = renderTable(rows, [
         { key: 'request_id', label: '请求ID' },
-        { key: 'device_id', label: '设备ID' },
+        { key: '!device_label', label: '设备', fn: (r) => displayDevice(r) },
+        { key: 'ip', label: '内网IP' },
         { key: 'type', label: '类型' },
         { key: 'action', label: '动作' },
         { key: 'status', label: '状态' },
         { key: 'created_at', label: '创建时间' }
       ]);
     } else if (tab === 'usage') {
-      const rows = await api('/api/admin/usage');
+      const rows = apiList(await api('/api/admin/usage'));
       c.innerHTML = renderTable(rows, [
-        { key: 'device_id', label: '设备ID' },
+        { key: '!device_label', label: '设备', fn: (r) => displayDevice(r) },
         { key: 'provider', label: 'Provider' },
         { key: 'model', label: '模型' },
         { key: 'input_tokens', label: '输入 tokens' },
@@ -329,7 +367,7 @@ async function loadTab(tab) {
         { key: 'period', label: '周期' }
       ]);
     } else if (tab === 'audit') {
-      const rows = await api('/api/admin/audit_log');
+      const rows = apiList(await api('/api/admin/audit_log'));
       c.innerHTML = renderTable(rows, [
         { key: 'id', label: 'ID' },
         { key: 'operator', label: '操作者' },
@@ -339,11 +377,12 @@ async function loadTab(tab) {
         { key: 'request_id', label: '请求ID' }
       ]);
     } else if (tab === 'agents') {
-      const rows = await api('/api/admin/agents');
+      const rows = apiList(await api('/api/admin/agents'));
       c.innerHTML = renderTable(rows, [
-        { key: 'device_id', label: '设备ID' },
+        { key: '!device_label', label: '设备', fn: (r) => displayDevice(r) },
         { key: 'agent_id', label: 'Agent' },
-        { key: 'file_count', label: '文件数' }
+        { key: 'file_count', label: '文件数' },
+        { key: 'ip', label: '内网IP' }
       ]);
     } else if (tab === 'push') {
       c.innerHTML = await loadPush();

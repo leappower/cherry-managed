@@ -52,11 +52,12 @@ class DeviceRegistry:
     def register(self, device_id: str, hostname: str, os_: str,
                  cherry_version: str, fork_version: str | None,
                  group: str | None, token: str,
-                 managed_key: str | None = None) -> dict:
+                 managed_key: str | None = None, ip: str | None = None) -> dict:
         """注册/更新设备元数据，写 devices 表。幂等（UPSERT）。
 
         managed_key 为 JJC-20260818-001 设备级受管密钥（可空）；空值不覆盖旧值
         （周期/重连上报空 managed_key 时保留已登记 key）。
+        ip 为设备内网地址（由 WS 连接对端获取），仅非空时覆盖旧值。
         """
         now = _now()
         conn = db.get_conn(self.db_path)
@@ -64,8 +65,8 @@ class DeviceRegistry:
         conn.execute(
             """
             INSERT INTO devices(device_id, hostname, os, cherry_version, fork_version,
-                                online, last_seen, "group", token, managed_key)
-            VALUES (?,?,?,?,?,1,?,?,?,?)
+                                online, last_seen, "group", token, managed_key, ip)
+            VALUES (?,?,?,?,?,1,?,?,?,?,?)
             ON CONFLICT(device_id) DO UPDATE SET
                 hostname=excluded.hostname,
                 os=excluded.os,
@@ -78,10 +79,12 @@ class DeviceRegistry:
                 managed_key=CASE WHEN excluded.managed_key IS NOT NULL
                                  AND excluded.managed_key != ''
                                  THEN excluded.managed_key
-                                 ELSE devices.managed_key END
+                                 ELSE devices.managed_key END,
+                ip=CASE WHEN excluded.ip IS NOT NULL AND excluded.ip != ''
+                        THEN excluded.ip ELSE devices.ip END
             """,
             (device_id, hostname, os_, cherry_version, fork_version, now, group,
-             token, managed_key),
+             token, managed_key, ip),
         )
         conn.commit()
         rec = self.get(device_id)
@@ -132,7 +135,7 @@ class DeviceRegistry:
         conn = db.get_conn(self.db_path)
         row = conn.execute(
             "SELECT device_id, hostname, os, cherry_version, fork_version, online, "
-            "last_seen, \"group\", token, managed_key FROM devices WHERE device_id=?",
+            "last_seen, \"group\", token, managed_key, ip, remark FROM devices WHERE device_id=?",
             (device_id,),
         ).fetchone()
         return db._row_to_dict(row)
@@ -141,7 +144,7 @@ class DeviceRegistry:
         conn = db.get_conn(self.db_path)
         rows = conn.execute(
             "SELECT device_id, hostname, os, cherry_version, fork_version, online, "
-            "last_seen, \"group\", token, managed_key FROM devices ORDER BY device_id"
+            "last_seen, \"group\", token, managed_key, ip, remark FROM devices ORDER BY device_id"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -161,6 +164,13 @@ class DeviceRegistry:
         conn = db.get_conn(self.db_path)
         conn.execute('UPDATE devices SET "group"=? WHERE device_id=?', (group, device_id))
         conn.commit()
+
+    def set_remark(self, device_id: str, remark: str) -> None:
+        """设置设备备注（问题3：设备ID解析调优）。空串即清除备注。"""
+        conn = db.get_conn(self.db_path)
+        conn.execute("UPDATE devices SET remark=? WHERE device_id=?", (remark, device_id))
+        conn.commit()
+
 
     def device_exists(self, device_id: str) -> bool:
         conn = db.get_conn(self.db_path)
