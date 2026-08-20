@@ -387,7 +387,7 @@ async def admin_agent_config_create(req: AgentConfigReq,
                                     token: str = Depends(require_admin)):
     """AC1：创建配置包（rev=1），返回新版本记录。"""
     pkg = req.model_dump(exclude_none=True)
-    errors = validate_pkg(pkg)
+    errors = validate_pkg(pkg, require_id=False)
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors})
     ver = pkg.get("metadata", {}).get("version", "1.0.0")
@@ -416,7 +416,7 @@ async def admin_agent_config_update(name: str, req: AgentConfigReq,
         raise HTTPException(status_code=404, detail="agent 配置不存在")
     pkg = req.model_dump(exclude_none=True)
     pkg.setdefault("metadata", {})["name"] = name
-    errors = validate_pkg(pkg)
+    errors = validate_pkg(pkg, require_id=True)
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors})
     ver = pkg.get("metadata", {}).get("version", "")

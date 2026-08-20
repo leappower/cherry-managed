@@ -239,7 +239,7 @@ class AgentRepo:
         return [dict(r) for r in rows]
 
 
-def validate_pkg(pkg: dict) -> list[str]:
+def validate_pkg(pkg: dict, *, require_id: bool = False) -> list[str]:
     """包结构校验（spec 2.x）。返回错误列表；空列表=合法。"""
     errors: list[str] = []
     metadata = pkg.get("metadata")
@@ -253,6 +253,8 @@ def validate_pkg(pkg: dict) -> list[str]:
     else:
         if not agent.get("name"):
             errors.append("agent.name 必填")
+        if require_id and not agent.get("id"):
+            errors.append("agent.id 必填（推送/回滚/对账的稳定标识）")
         if not agent.get("type"):
             errors.append("agent.type 必填")
         if not agent.get("model"):
