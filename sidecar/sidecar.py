@@ -276,6 +276,21 @@ def _read_managed_key_from_db() -> str:
         candidates.append(
             str(Path(appdata) / "CherryStudio" / "Data" / "cherrystudio.sqlite")
         )
+    # 服务以 LocalSystem 运行时 APPDATA 指向系统账户目录（C:\Windows\System32\
+    # # systemprofile\...），拿不到真实用户的 CherryStudio 数据。降级：扫描所有
+    # # C:\Users\*\AppData\Roaming\CherryStudio\Data\cherrystudio.sqlite（实时用户
+    # 目录），兼容 NSSM LocalSystem 服务场景（JJC-20260819-001 方案B 服务模式）。
+    if os.name == "nt":
+        users_root = Path(os.environ.get("SystemDrive", "C:")) / "Users"
+        try:
+            for ud in users_root.iterdir():
+                if not ud.is_dir():
+                    continue
+                p = ud / "AppData" / "Roaming" / "CherryStudio" / \
+                    "Data" / "cherrystudio.sqlite"
+                candidates.append(str(p))
+        except OSError:
+            pass
     # Linux/macOS 降级：常见受管数据目录
     home = Path.home()
     candidates.append(str(home / ".cherrystudio" / "cherrystudio.sqlite"))

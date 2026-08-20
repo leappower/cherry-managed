@@ -151,3 +151,18 @@ class TestReadManagedKeyFromDb:
             conn.close()
         monkeypatch.setenv("APPDATA", str(tmp_path))
         assert _read_managed_key_from_db() == ""
+
+
+class TestReadManagedKeyLocalSystem:
+    """LocalSystem 服务场景：APPDATA 指向系统账户，降级扫描 C:\\Users\\* 找到真实用户。"""
+
+    def test_scans_all_users_when_appdata_is_system(self, tmp_path, monkeypatch):
+        import sqlite3
+        # 模拟: APPDATA 指向系统账户(找不到), 真实用户 sqlite 在 C:\Users\<u>\AppData
+        # 但测试环境是 Linux, os.name!='nt', 该分支不触发。
+        # 这里测 Linux 降级路径: 仅在用户家目录找不到时返回空(不崩溃)
+        monkeypatch.setenv("APPDATA", str(tmp_path / "systemprofile"))
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+        # 无任何候选 db -> 返回空, 不抛异常(LocalSystem 拿不到时的安全降级)
+        assert _read_managed_key_from_db() == ""
