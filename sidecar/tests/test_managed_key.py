@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from sidecar.sidecar import (  # noqa: E402
     _managed_key,
     _managed_key_file,
+    _read_managed_key_from_db,
     MANAGED_KEY_FILE,
     USER_CONFIG_DIR_NAME,
 )
@@ -99,3 +100,54 @@ class TestManagedKey:
         dev_json = dev_dir / "device.json"
         if dev_json.exists():
             assert "managed_key" not in json.loads(dev_json.read_text(encoding="utf-8"))
+
+
+class TestReadManagedKeyFromDb:
+    """JJC-20260819-001 方案B 断链修复：从本机 CherryStudio sqlite 读 K2 旁路。
+
+    覆盖：loopback 拉取被 403（K2 已存在带 Bearer 保护）时，sidecar 能从
+    %APPDATA%\\CherryStudio\\Data\\cherrystudio.sqlite 的 preference 表直读
+    feature.api_gateway.managed_key，避免鸡生蛋。
+    """
+
+    def _make_sqlite(self, db_path: Path, k2: str) -> None:
+        import sqlite3
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE preference (scope TEXT, key TEXT, value TEXT)")
+            # 与 40 号机实测一样：value 是 JSON 字符串（带引号）
+            conn.execute(
+                "INSERT INTO preference (scope, key, value) VALUES (?,?,?)",
+                ("default", "feature.api_gateway.managed_key", json.dumps(k2)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_reads_k2_from_appdata_sqlite(self, tmp_path, monkeypatch):
+        k2 = "cs-mk-b65b14f9-9aad-42cf-b812-dc7f61e39bf0"
+        fake_appdata = tmp_path / "appdata"
+        self._make_sqlite(fake_appdata / "CherryStudio" / "Data" / "cherrystudio.sqlite", k2)
+        monkeypatch.setenv("APPDATA", str(fake_appdata))
+
+        got = _read_managed_key_from_db()
+        assert got == k2, "应从 preference 表 JSON value 提取到 K2"
+
+    def test_returns_empty_when_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("APPDATA", str(tmp_path / "nonexistent"))
+        assert _read_managed_key_from_db() == ""
+
+    def test_returns_empty_when_key_absent(self, tmp_path, monkeypatch):
+        import sqlite3
+        db = tmp_path / "CherryStudio" / "Data" / "cherrystudio.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("CREATE TABLE preference (scope TEXT, key TEXT, value TEXT)")
+            conn.execute("INSERT INTO preference VALUES ('default','other.key','\"x\"')")
+            conn.commit()
+        finally:
+            conn.close()
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        assert _read_managed_key_from_db() == ""

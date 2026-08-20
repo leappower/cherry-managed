@@ -256,6 +256,57 @@ def _managed_key() -> str:
     return key
 
 
+def _read_managed_key_from_db() -> str:
+    """从本机 CherryStudio 的 cherrystudio.sqlite 直读受管管理 key (K2)。
+
+    sidecar 与 CherryStudio 同机运行。当 loopback 路由无法回拉（K2 已存在且
+    带 Bearer 保护，sidecar 无 K2 首启拿不到——鸡生蛋；JJC-20260819-001 方案B
+    断链修复补充）时，从 ``%APPDATA%\\CherryStudio\\Data\\cherrystudio.sqlite``
+    的 preference 表读取 ``feature.api_gateway.managed_key``。
+
+    仅在受管版（存在该表/字段）且同机时可用；找不到返回空串，不抛异常，
+    由调用方在下一个 reconcile/heartbeat 周期重试。
+    """
+    import sqlite3
+
+    candidates = []
+    # Windows: %APPDATA%\CherryStudio\Data\cherrystudio.sqlite
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(
+            str(Path(appdata) / "CherryStudio" / "Data" / "cherrystudio.sqlite")
+        )
+    # Linux/macOS 降级：常见受管数据目录
+    home = Path.home()
+    candidates.append(str(home / ".cherrystudio" / "cherrystudio.sqlite"))
+    candidates.append(str(home / ".config" / "CherryStudio" / "cherrystudio.sqlite"))
+
+    for db in candidates:
+        if not Path(db).is_file():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT value FROM preference "
+                    "WHERE key = 'feature.api_gateway.managed_key' LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row and isinstance(row[0], str) and row[0].strip():
+                    try:
+                        val = json.loads(row[0])
+                        if isinstance(val, str) and val:
+                            return val
+                    except json.JSONDecodeError:
+                        return row[0].strip()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError) as e:
+            logger.warning("从 %s 读 managed_key 失败: %s", db, e)
+    return ""
+
+
 class SidecarRunner:
     """常驻主进程：组装各模块 + 指令路由 + 定时采集/对账/自愈。"""
 
@@ -315,13 +366,25 @@ class SidecarRunner:
         self.healer.set_retry_cb(self._retry_dispatch)
 
     # ---- JJC-20260818-001：managed_key 拉取 ----
+    # ---- 本机 CherryStudio sqlite 读取（K2 旁路） ----
+    # 注：逻辑在模块级函数 _read_managed_key_from_db() 实现（不依赖 self，
+    # 便于单测）。此处为 SidecarRunner 实例方法的薄封装。
+    def _read_managed_key_from_db(self) -> str:
+        return _read_managed_key_from_db()
+
     def _fetch_managed_key(self) -> str:
         """从 Fork loopback 只读路由拉取 managed_key。
 
         GET http://127.0.0.1:23333/v1/admin/managed-key，带 X-Device-Id 自证
-        设备身份（服务端回环校验 + 405 非回环拒绝）。Cherry 未启动 / 路由不可达
+        设备身份（服务端回环校验，非回环拒绝）。Cherry 未启动 / 路由不可达
         时返回空串并记 warning，由调用方在下一个 reconcile/heartbeat 周期重试，
         不崩溃。
+
+        兼容两种场景（JJC-20260819-001 方案B 断链修复补充）：
+          * 首次启动（Cherry 尚未生成 key）→ loopback 自供给可拉到；
+          * key 已存在（带 Bearer 保护）→ 无 Bearer 会被 403，此时回退到
+            ``_read_managed_key_from_db`` 从本机 CherryStudio sqlite 直读 K2，
+            避免鸡生蛋导致 /v1/admin/* 一直 401。
         """
         import urllib.request
         import urllib.error
@@ -336,14 +399,23 @@ class SidecarRunner:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status != 200:
                     logger.warning("拉取 managed_key 非 200: %s", resp.status)
-                    return ""
-                data = json.loads(resp.read().decode("utf-8"))
-                key = (data or {}).get("managed_key", "")
-                return key if isinstance(key, str) else ""
+                else:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    key = (data or {}).get("managed_key", "")
+                    if isinstance(key, str) and key:
+                        return key
         except (urllib.error.URLError, urllib.error.HTTPError, OSError,
                 json.JSONDecodeError) as e:
-            logger.warning("拉取 managed_key 失败(下次周期重试): %s", e)
-            return ""
+            logger.warning("拉取 managed_key 失败(将尝试本机 db): %s", e)
+
+        # 旁路：本机 CherryStudio sqlite 直读（覆盖 key 已存在、loopback Bearer
+        # 保护的鸡生蛋场景）。
+        key = self._read_managed_key_from_db()
+        if key:
+            logger.info("从本机 CherryStudio sqlite 读到受管管理 key (K2)")
+            return key
+        logger.warning("managed_key 未拿到（loopback 与本地 db 均失败，下次周期重试）")
+        return ""
 
     def _ensure_managed_key(self) -> str:
         """确保已持有 managed_key：拉取缓存(幂等)，空则拉一次并同步到 ForkClient。
