@@ -88,6 +88,7 @@
         <div class="tab" data-tab="usage">用量</div>
         <div class="tab" data-tab="audit">审计日志</div>
         <div class="tab" data-tab="agents">Agent 清单</div>
+        <div class="tab" data-tab="packages">包配置</div>
         <div class="tab" data-tab="push">推送Agent</div>
         <div class="tab" data-tab="reconcile">对账</div>
       </div>
@@ -304,6 +305,146 @@ async function doPush() {
   }
 }
 
+// ================= 包配置管理（新建/编辑/版本/回滚） =================
+let pkgState = { editing: null, mode: 'form' };
+
+function pkgCard(label, inner) {
+  return '<div class="card"><h3>' + label + '</h3>' + inner + '</div>';
+}
+
+// 新建视图：右侧显示空表单
+async function loadPackages() {
+  const packs = ((await api('/api/admin/agent-configs')).data) || [];
+  // 列表
+  let listHtml = '<div>';
+  if (!packs.length) {
+    listHtml += '<span class="muted">尚无 Agent 配置包。在右侧新建第一个包。</span>';
+  } else {
+    packs.forEach((p) => {
+      const sel = pkgState.editing && p.name === pkgState.editing ? ' selected' : '';
+      listHtml += '<div class="pkg-row' + sel + '" data-name="' + esc(p.name) + '" onclick="selectPkg(this)">' +
+        '<span class="pkg-name">' + esc(p.name) + '</span>' +
+        '<span class="muted">rev' + esc(p.latest_rev) + ' · v' + esc(p.version) +
+        (p.locked ? ' 🔒' : '') + '</span></div>';
+    });
+  }
+  listHtml += '</div>';
+
+  // 右侧：编辑区（新建 or 编辑已有）
+  let editorHtml = '';
+  if (pkgState.editing) {
+    const detail = (await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing))).data || {};
+    const latest = detail.version || {};
+    const agent = latest.agent || {};
+    const meta = latest.metadata || {};
+    const cfgTxt = JSON.stringify(agent.configuration || {}, null, 2);
+    editorHtml = pkgCard('编辑配置包：' + esc(pkgState.editing),
+      '<div class="push-actions"><button class="secondary" onclick="pkgState={editing:null,mode:\'form\'};loadTab(\'packages\')">新建</button>' +
+      '<button class="secondary" onclick="loadPkgVersions()">刷新版本</button></div>' +
+      pkgForm(meta, agent, cfgTxt) +
+      '<div class="push-actions"><button onclick="savePkg()">保存为新版本(rev+1)</button>' +
+      '<button class="secondary" onclick="loadPkgVersions()">版本历史</button></div>');
+  } else {
+    editorHtml = pkgCard('新建配置包',
+      pkgForm({ name: '', version: '1.0.0' }, { name: '', type: 'claude-code', model: '', description: '', instructions: '' }, '') +
+      '<div class="push-actions"><button onclick="savePkg()">创建(rev=1)</button></div>');
+  }
+
+  const left = '<div>' + pkgCard('① 配置包列表', listHtml) + '<div id="pkg-versions"></div>' + '</div>';
+  const right = '<div>' + editorHtml + '</div>';
+  return '<div class="push-grid">' + left + right + '</div>';
+}
+
+// 修正版 pkgForm：避免 verTxt 嵌套错误
+function pkgForm(meta, agent, cfgTxt) {
+  return '<label>名称 (metadata.name, 稳定主键)</label>' +
+    '<input type="text" id="pkg-name" value="' + esc(meta.name || '') + '" ' + (pkgState.editing ? 'disabled' : '') + '>' +
+    '<label>版本 (语义化 x.y.z)</label>' +
+    '<input type="text" id="pkg-version" value="' + esc(meta.version || '1.0.0') + '">' +
+    '<label>Agent name（员工机显示名）</label>' +
+    '<input type="text" id="pkg-agent-name" value="' + esc((agent && agent.name) || '') + '">' +
+    '<label>type</label>' +
+    '<input type="text" id="pkg-type" value="' + esc((agent && agent.type) || 'claude-code') + '">' +
+    '<label>model（如 cherryai::qwen2.5-coder）</label>' +
+    '<input type="text" id="pkg-model" value="' + esc((agent && agent.model) || '') + '" placeholder="必填">' +
+    '<label>description（可选）</label>' +
+    '<input type="text" id="pkg-desc" value="' + esc((agent && agent.description) || '') + '">' +
+    '<label>instructions（系统提示词 / prompt）</label>' +
+    '<textarea id="pkg-instructions" rows="6" placeholder="粘贴你调试好的完整 instructions">' + esc((agent && agent.instructions) || '') + '</textarea>' +
+    '<label>configuration（JSON，可选）</label>' +
+    '<textarea id="pkg-cfg" rows="4" placeholder=\'{"permission_mode":"default","max_turns":50}\'>' + (cfgTxt || '') + '</textarea>' +
+    '<div class="muted">新建走 POST（服务端自动生成 id）；更新走 PUT（必须带原 id，自动 rev+1）</div>';
+}
+
+function verTxt(v) { return v || ''; }
+
+async function selectPkg(el) {
+  pkgState.editing = el.dataset.name;
+  loadTab('packages');
+}
+
+async function loadPkgVersions() {
+  const box = $('pkg-versions');
+  if (!pkgState.editing) { box.innerHTML = ''; return; }
+  const ver = ((await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing) + '/versions')).data) || [];
+  box.innerHTML = pkgCard('② 版本历史（点版本→回滚）', ver.length ?
+    ver.map((v) => '<div class="pkg-row" onclick="rollbackPkg(\'' + esc(v.rev) + '\')">' +
+      '<span>rev' + esc(v.rev) + ' · v' + esc(v.version) + '</span>' +
+      '<span class="muted">' + esc(v.created_at || '') + '</span></div>').join('') :
+    '<span class="muted">无版本</span>');
+}
+
+async function rollbackPkg(rev) {
+  if (!confirm('确认回滚 ' + pkgState.editing + ' 到 rev' + rev + '？将推送到已部署设备')) return;
+  try {
+    const r = await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing) + '/rollback-to/' + rev, {
+      method: 'POST', body: JSON.stringify({ reason: 'admin UI rollback' })
+    });
+    alert('回滚发起: ' + JSON.stringify(r.data && r.data.dispatch));
+    loadPkgVersions();
+  } catch (e) { alert('回滚失败: ' + (e.message || e)); }
+}
+
+async function savePkg() {
+  const name = $('pkg-name') ? $('pkg-name').value.trim() : '';
+  const version = $('pkg-version') ? $('pkg-version').value.trim() || '1.0.0' : '1.0.0';
+  const aname = $('pkg-agent-name') ? $('pkg-agent-name').value.trim() : '';
+  const ttype = $('pkg-type') ? $('pkg-type').value.trim() || 'claude-code' : 'claude-code';
+  const model = $('pkg-model') ? $('pkg-model').value.trim() : '';
+  const desc = $('pkg-desc') ? $('pkg-desc').value.trim() : '';
+  const instr = $('pkg-instructions') ? $('pkg-instructions').value : '';
+  let cfg = {};
+  const cfgTxt = $('pkg-cfg') ? $('pkg-cfg').value.trim() : '';
+  if (cfgTxt) {
+    try { cfg = JSON.parse(cfgTxt); } catch (e) { alert('configuration JSON 格式错误: ' + e.message); return; }
+  }
+  if (!name || !aname || !model || !instr) {
+    alert('必填: 名称 / Agent名 / model / instructions'); return;
+  }
+  const pkg = {
+    metadata: { name, version },
+    agent: { name: aname, type: ttype, model, description: desc, instructions: instr, configuration: cfg }
+  };
+  const isEdit = !!pkgState.editing;
+  const url = isEdit ? '/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing) : '/api/admin/agent-configs';
+  try {
+    const body = Object.assign({}, pkg);
+    if (isEdit) {
+      // 编辑时：确保带稳定 id（从服务端最新配置里拿）
+      const cur = ((await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing))).data || {});
+      const curAgent = (cur && cur.version && cur.version.agent) || {};
+      body.agent.id = curAgent.id;
+    }
+    const r = await api(url, { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    alert(isEdit ? '已更新为 rev' + r.data.rev : '已创建 rev1');
+    pkgState = { editing: isEdit ? pkgState.editing : null, mode: 'form' };
+    loadTab('packages');
+  } catch (e) {
+    let msg = e.message || e;
+    alert('保存失败: ' + msg);
+  }
+}
+
 let pollTimer = null;
 function pollPushJobs(rids) {
   if (pollTimer) clearInterval(pollTimer);
@@ -384,6 +525,8 @@ async function loadTab(tab) {
         { key: 'file_count', label: '文件数' },
         { key: 'ip', label: '内网IP' }
       ]);
+    } else if (tab === 'packages') {
+      c.innerHTML = await loadPackages();
     } else if (tab === 'push') {
       c.innerHTML = await loadPush();
     } else if (tab === 'reconcile') {

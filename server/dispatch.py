@@ -97,11 +97,16 @@ class DispatchService:
         载荷含 ``agent_name``(agent.name) / ``config``(agent 主体) / ``rev``(metadata.rev)
         以及 resources/skills（skills 仍走独立通道语义，payload 内含引用但不混入配置自身）。
         对账锚点：设备侧回执 ``deployed_rev`` 由 sidecar 上报。
+
+        2026-08-21 修复（与 8/20 实测对齐）：agent 无 id → action=create（首装，服务端/侧车自动生成 UUID）；
+        有 id → action=update（升级）。此前硬编码 update 导致「新建包首推新机器」404。
         """
-        created = self._create_log(request_id, device_id, "dispatch_agent", "update")
+        is_first = not agent.get("id")
+        action = "create" if is_first else "update"
+        created = self._create_log(request_id, device_id, "dispatch_agent", action)
         msg = {
             "type": "dispatch_agent",
-            "action": "update",
+            "action": action,
             "agent": agent,          # config 主体
             "agent_name": agent.get("name", ""),
             "config": agent,         # 与 agent 同体，明确「配置单元」语义
