@@ -195,6 +195,21 @@ class AgentRepo:
         conn.execute("UPDATE agent_configs SET locked=? WHERE name=?", (1 if locked else 0, name))
         conn.commit()
 
+    def delete_config(self, name: str) -> bool:
+        """删除配置包（含全部版本历史/部署状态）。锁定包禁止删除。返回是否真的删了。"""
+        conn = db.get_conn(self.db_path)
+        row = conn.execute("SELECT locked FROM agent_configs WHERE name=?", (name,)).fetchone()
+        if row is None:
+            return False
+        if row["locked"]:
+            raise ValueError(f"{name} 已锁定，禁止删除")
+        conn.execute("DELETE FROM agent_configs WHERE name=?", (name,))
+        conn.execute("DELETE FROM agent_versions WHERE name=?", (name,))
+        conn.execute("DELETE FROM deploy_status WHERE agent_name=?", (name,))
+        conn.commit()
+        db.audit(self.db_path, "admin", "agent_config_delete", name, None)
+        return True
+
     def is_locked(self, name: str) -> bool:
         conn = db.get_conn(self.db_path)
         row = conn.execute("SELECT locked FROM agent_configs WHERE name=?", (name,)).fetchone()

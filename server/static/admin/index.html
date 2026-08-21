@@ -50,7 +50,9 @@
   .res-ok { background: #dcfce7; color: #166534; }
   .res-fail { background: #fee2e2; color: #b91c1c; }
   .remark-in { border: 1px solid transparent; background: transparent; padding: 2px 4px; font-size: 13px; width: 100%; border-radius: 4px; }
-  .remark-in:hover, .remark-in:focus { border-color: #d1d5db; background: #fff; }
+    .remark-in:hover, .remark-in:focus { border-color: #d1d5db; background: #fff; }
+  .pkg-row button.del { border: none; background: transparent; cursor: pointer; font-size: 13px; color: #9ca3af; padding: 0 4px; }
+  .pkg-row button.del:hover { color: #dc2626; }
 
 </style>
 </head>
@@ -325,7 +327,8 @@ async function loadPackages() {
       listHtml += '<div class="pkg-row' + sel + '" data-name="' + esc(p.name) + '" onclick="selectPkg(this)">' +
         '<span class="pkg-name">' + esc(p.name) + '</span>' +
         '<span class="muted">rev' + esc(p.latest_rev) + ' · v' + esc(p.version) +
-        (p.locked ? ' 🔒' : '') + '</span></div>';
+        (p.locked ? ' 🔒' : '') + '</span>' +
+        '<button class="del-pkg" data-name="' + esc(p.name) + '" title="删除该配置包" onclick="event.stopPropagation();delPkg(\'' + esc(p.name) + '\')">🗑</button></div>';
     });
   }
   listHtml += '</div>';
@@ -403,6 +406,18 @@ async function rollbackPkg(rev) {
     alert('回滚发起: ' + JSON.stringify(r.data && r.data.dispatch));
     loadPkgVersions();
   } catch (e) { alert('回滚失败: ' + (e.message || e)); }
+}
+
+async function delPkg(name) {
+  if (!confirm('确认删除配置包「' + name + '」？其全部版本历史与设备部署状态将一并删除。')) return;
+  try {
+    await api('/api/admin/agent-configs/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (pkgState.editing === name) pkgState = { editing: null, mode: 'form' };
+    alert('已删除'); loadTab('packages');
+  } catch (e) {
+    const msg = (e && e.message) || e;
+    alert('删除失败: ' + msg + (msg.indexOf('锁定') >= 0 ? '（锁定中的包需先解锁）' : ''));
+  }
 }
 
 async function savePkg() {

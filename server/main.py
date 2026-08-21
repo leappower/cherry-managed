@@ -426,6 +426,20 @@ async def admin_agent_config_update(name: str, req: AgentConfigReq,
     return {"ok": True, "data": rec}
 
 
+@app.delete("/api/admin/agent-configs/{name}", dependencies=[Depends(require_admin)])
+async def admin_agent_config_delete(name: str,
+                                     token: str = Depends(require_admin)):
+    """AC1：删除配置包（含全部版本/部署状态）。锁定包 409。"""
+    try:
+        ok = _repo.delete_config(name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    if not ok:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    db.audit(DB_PATH, admin_auth.admin_user, "agent_config_delete", name, None)
+    return {"ok": True, "data": {"deleted": name}}
+
+
 @app.get("/api/admin/agent-configs/{name}/versions", dependencies=[Depends(require_admin)])
 async def admin_agent_config_versions(name: str):
     """AC1/AC6：版本历史（rev 倒序）。"""
