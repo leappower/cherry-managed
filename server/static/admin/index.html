@@ -348,9 +348,20 @@ async function loadPackages() {
       '<div class="push-actions"><button onclick="savePkg()">保存为新版本(rev+1)</button>' +
       '<button class="secondary" onclick="loadPkgVersions()">版本历史</button></div>');
   } else {
-    editorHtml = pkgCard('新建配置包',
+    // 新建视图：顶部加「从设备导入」入口（生产端断层补齐）
+    let importHtml = '<div class="card"><h3>📥 从设备导入 Agent（生产端）</h3>' +
+      '<div class="muted" style="margin-bottom:8px">选一台员工机 → 列出该机现有 Agent → 选一个导入为配置包（自动带 id，可直接推送升级）。</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      '<select id="imp-device" style="flex:1;min-width:220px"><option value="">加载设备…</option></select>' +
+      '<button class="secondary" id="imp-list-btn" onclick="loadDeviceAgents()">列出 Agent</button>' +
+      '<select id="imp-agent" style="flex:1;min-width:220px" disabled><option value="">先选设备</option></select>' +
+      '<button id="imp-do-btn" onclick="importAgent()" disabled>📥 导入为配置包</button></div>' +
+      '<div id="imp-status" class="muted" style="margin-top:8px"></div></div>';
+    editorHtml = importHtml + pkgCard('新建配置包（或从上方设备导入）',
       pkgForm({ name: '', version: '1.0.0' }, { name: '', type: 'claude-code', model: '', description: '', instructions: '' }, '') +
       '<div class="push-actions"><button onclick="savePkg()">创建(rev=1)</button></div>');
+    // 填充设备下拉
+    setTimeout(loadImportDevices, 50);
   }
 
   const left = '<div>' + pkgCard('① 配置包列表', listHtml) + '<div id="pkg-versions"></div>' + '</div>';
@@ -407,6 +418,67 @@ async function rollbackPkg(rev) {
     loadPkgVersions();
   } catch (e) { alert('回滚失败: ' + (e.message || e)); }
 }
+
+
+// ---- 从设备导入 Agent（生产端补齐：①制作来源） ----
+async function loadImportDevices() {
+  const sel = $('imp-device');
+  if (!sel) return;
+  try {
+    const d = await api('/api/admin/devices');
+    const items = (d.items || []);
+    sel.innerHTML = '<option value="">选择设备（' + items.length + ' 台）</option>' +
+      items.map((m) => '<option value="' + esc(m.device_id) + '"' +
+        (m.online ? '' : ' disabled') + '>' + esc(m.hostname || m.device_id) +
+        (m.online ? '' : '（离线）') + '</option>').join('');
+    if (items.length && !items.some((m) => m.online)) {
+      $('imp-status').textContent = '⚠ 没有在线设备，请先确认员工机 sidecar 已连接';
+    }
+  } catch (e) { $('imp-status').textContent = '加载设备失败: ' + (e.message || e); }
+}
+
+async function loadDeviceAgents() {
+  const dev = $('imp-device').value;
+  if (!dev) { alert('先选择设备'); return; }
+  const st = $('imp-status'); st.textContent = '正在从设备拉取 Agent 列表…';
+  $('imp-do-btn').disabled = true;
+  try {
+    const r = await api('/api/admin/devices/' + encodeURIComponent(dev) + '/agent-import', { method: 'POST', body: '{}' });
+    const agents = (r.data && r.data.agents) || [];
+    const sel = $('imp-agent');
+    sel.disabled = false;
+    sel.innerHTML = '<option value="">选择要导入的 Agent（' + agents.length + ' 个）</option>' +
+      agents.map((a) => '<option value="' + esc(a.id) + '" data-name="' + esc(a.name) + '">' +
+        esc(a.name) + ' · ' + esc(a.type) + (a.model ? ' · ' + esc(a.model) : '') + '</option>').join('');
+    if (!agents.length) st.textContent = '⚠ 该设备上无 Agent 可导入（或列表为空）';
+    else st.textContent = '共 ' + agents.length + ' 个 Agent，选一个导入。';
+    $('imp-do-btn').disabled = false;
+  } catch (e) { st.textContent = '拉取失败: ' + (e.message || e); }
+}
+
+async function importAgent() {
+  const dev = $('imp-device').value, aid = $('imp-agent').value;
+  if (!dev || !aid) { alert('先选设备和 Agent'); return; }
+  const opt = $('imp-agent').selectedOptions[0];
+  const name = opt ? opt.dataset.name : aid;
+  if (!confirm('确认将设备上的 Agent「' + name + '」导入为配置包？')) return;
+  const st = $('imp-status'); st.textContent = '正在导入…';
+  try {
+    const r = await api('/api/admin/devices/' + encodeURIComponent(dev) + '/agent-import', {
+      method: 'POST', body: JSON.stringify({ agent_name: name })
+    });
+    if (r.data && r.data.imported) {
+      const cfgName = r.data.config.name;
+      st.innerHTML = '✅ 已导入为配置包 <b>' + esc(cfgName) + '</b>（rev' + esc(r.data.config.rev) +
+        '，含源设备/源 Agent 溯源）。<a href="javascript:void(0)" onclick="selectImportedPkg()">点此查看/编辑</a>';
+      pkgState = { editing: cfgName, mode: 'form' };
+    } else {
+      st.textContent = '未知响应：' + JSON.stringify(r);
+    }
+  } catch (e) { st.textContent = '导入失败: ' + (e.message || e); }
+}
+
+function selectImportedPkg() { loadTab('packages'); }
 
 async function delPkg(name) {
   if (!confirm('确认删除配置包「' + name + '」？其全部版本历史与设备部署状态将一并删除。')) return;
