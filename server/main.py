@@ -440,6 +440,91 @@ async def admin_agent_config_delete(name: str,
     return {"ok": True, "data": {"deleted": name}}
 
 
+@app.post("/api/admin/devices/{device_id}/agent-import", dependencies=[Depends(require_admin)])
+async def admin_device_agent_import(device_id: str,
+                                     req: dict | None = None,
+                                     token: str = Depends(require_admin)):
+    """从员工机导入 Agent 列表为配置包（方案B生产端）。
+
+    向目标设备发 WS 指令 agent_list → 等回执 → 把选中的 agent 存为配置包。
+    Body（可选）：{"agent_id": "...", "name": "..."} 指定要导入的 agent；
+    不指定则返回设备上的全部 agent 清单供 UI 选择。
+    """
+    import asyncio
+    from ws_server import wait_for_reply, resolve_reply
+
+    dev = ws_server.registry.get(device_id)
+    if dev is None or not dev.get("online"):
+        raise HTTPException(status_code=404, detail="设备离线或不存在")
+    ws = ws_server.registry.get_connection(device_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="设备 WS 连接不存在")
+    rid = f"imp-{device_id[-6:]}-{_now_short()}"
+    await ws.send_json({"type": "agent_list", "request_id": rid})
+    fut = wait_for_reply(rid, timeout=20)
+    try:
+        reply = await asyncio.wait_for(fut, timeout=20)
+    except asyncio.TimeoutError:
+        resolve_reply(rid, {})  # 防悬挂
+        raise HTTPException(status_code=504, detail="设备未在 20s 内回执 agent_list")
+    if not reply.get("success"):
+        raise HTTPException(status_code=502, detail=f"设备拉取失败: {reply.get('error')}")
+    agents = reply.get("agents") or []
+    if req and req.get("agent_name"):
+        want = req["agent_name"]
+        pick = next((a for a in agents if a.get("name") == want or a.get("id") == want), None)
+        if pick is None:
+            raise HTTPException(status_code=404, detail=f"设备上未找到 agent: {want}")
+        pkg = {
+            "metadata": {"name": pick.get("name"), "version": "1.0.0",
+                         "source_device": device_id, "source_agent_id": pick.get("id")},
+            "agent": {
+                "id": pick.get("id"),
+                "type": pick.get("type") or "claude-code",
+                "name": pick.get("name"),
+                "description": pick.get("description") or "",
+                "instructions": pick.get("instructions") or "",
+                "model": pick.get("model") or "cherryai::qwen",
+                "configuration": pick.get("configuration") or {},
+            },
+        }
+        cfg = _repo.create_config(pkg, created_by=admin_auth.admin_user)
+        return {"ok": True, "data": {"imported": True, "config": cfg,
+                                      "agent": pick}}
+    # 未指定：仅列出设备上的 agent（供 UI 选择）
+    return {"ok": True, "data": {"imported": False, "agents": [
+        {k: (a.get(k) or "") for k in ("id", "name", "type", "model", "description", "instructions")}
+        for a in agents]}}
+
+
+@app.post("/api/admin/devices/{device_id}/agent-test", dependencies=[Depends(require_admin)])
+async def admin_device_agent_test(device_id: str, req: dict,
+                                  token: str = Depends(require_admin)):
+    """对员工机上某 agent 发测试消息（方案 B④「员工端能否正常使用」验证）。
+
+    Body：{"agent_id": ..., "prompt": "..."} → 回执 success + reply 或 error。
+    """
+    import asyncio
+    from ws_server import wait_for_reply
+
+    agent_id = (req or {}).get("agent_id")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id 必填")
+    ws = ws_server.registry.get_connection(device_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="设备离线或 WS 连接不存在")
+    rid = f"test-{device_id[-6:]}-{_now_short()}"
+    await ws.send_json({"type": "agent_test", "request_id": rid,
+                        "agent_id": agent_id, "prompt": (req or {}).get("prompt")})
+    fut = wait_for_reply(rid, timeout=30)
+    try:
+        reply = await asyncio.wait_for(fut, timeout=30)
+    except asyncio.TimeoutError:
+        resolve_reply(rid, None)
+        raise HTTPException(status_code=504, detail="测试超时（30s 内无回执）")
+    return {"ok": True, "data": reply}
+
+
 @app.get("/api/admin/agent-configs/{name}/versions", dependencies=[Depends(require_admin)])
 async def admin_agent_config_versions(name: str):
     """AC1/AC6：版本历史（rev 倒序）。"""

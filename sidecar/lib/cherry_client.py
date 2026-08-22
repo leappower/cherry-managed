@@ -123,9 +123,11 @@ class CherryClient:
 
     # ── Agent 管理（受管 API：/v1/admin/agents）────────────────
     def list_agents(self) -> list:
-        """列出所有 Agent。返回 [{id, name, type, ...}]"""
+        """列出所有 Agent。返回 [{id, name, type, ...}]（受管 API 响应键为 agents）。"""
         resp = self._get("/v1/agents")
-        return resp.get("data", []) if isinstance(resp, dict) else []
+        if isinstance(resp, dict):
+            return resp.get("agents") or resp.get("data") or []
+        return resp if isinstance(resp, list) else []
 
     def get_agent(self, agent_id: str) -> dict:
         return self._get(f"/v1/agents/{agent_id}")

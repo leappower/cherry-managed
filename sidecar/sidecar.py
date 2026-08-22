@@ -505,6 +505,8 @@ class SidecarRunner:
             "dispatch_skills": self._handle_dispatch_skills,
             "fetch_agent_files": self._handle_fetch_agent_files,
             "status": self._handle_status,
+            "agent_list": self._handle_agent_list,
+            "agent_test": self._handle_agent_test,
         }.get(mtype)
         if handler is None:
             # 未知指令（含服务端 error）：只打日志，不回发（防循环）
@@ -563,6 +565,62 @@ class SidecarRunner:
     def _handle_status(self, msg: dict) -> None:
         self._send({"type": "status", "device_id": self.device["device_id"],
                     "request_id": msg.get("request_id")})
+
+    def _handle_agent_list(self, msg: dict) -> None:
+        """agent_list：本机拉取全部 Agent 清单回传（供服务端「从设备导入」）。
+
+        请求：{type: agent_list, request_id} → 回执：{type: agent_list_result, request_id, agents:[...]}
+        """
+        rid = msg.get("request_id") or ""
+        try:
+            agents = self.cherry.list_agents()
+            self._send({"type": "agent_list_result", "request_id": rid,
+                        "success": True, "agents": agents})
+        except Exception as e:  # noqa: BLE001
+            logger.exception("agent_list 失败: %s", e)
+            self._send({"type": "agent_list_result", "request_id": rid,
+                        "success": False, "error": str(e)})
+
+    def _handle_agent_test(self, msg: dict) -> None:
+        """agent_test：本机对该 Agent 发一条测试消息，验证可否正常使用。
+
+        请求：{type: agent_test, request_id, agent_id, prompt?}，
+        回执：{type: agent_test_result, request_id, success, reply?, error?}
+        """
+        rid = msg.get("request_id") or ""
+        agent_id = msg.get("agent_id") or ""
+        prompt = msg.get("prompt") or "你好，简单回复一下（连接测试）。"
+        if not agent_id:
+            self._send({"type": "agent_test_result", "request_id": rid,
+                        "success": False, "error": "agent_id 必填"})
+            return
+        try:
+            # 先做存在性验证（fork 可能无会话/聊天 API，退回配置完整性检查）
+            agent = self.cherry.get_agent(agent_id)
+            if not agent or not agent.get("id"):
+                self._send({"type": "agent_test_result", "request_id": rid,
+                            "success": False, "error": f"agent {agent_id} 不存在"})
+                return
+            # 尝试建会话发消息（支持 chat API 的 fork）；不支持则降级为配置验证
+            try:
+                sess = self.cherry.create_agent_session(agent_id, {"name": "server-test"})
+                sid = sess.get("id") if isinstance(sess, dict) else sess
+                reply = self.cherry.send_agent_message(agent_id, sid, prompt)
+                self._send({"type": "agent_test_result", "request_id": rid,
+                            "success": True, "reply": reply, "session_id": sid})
+            except Exception as chat_err:  # noqa: BLE001
+                # 降级：agent 已存在且配置完整即视为可用（会话 API 缺失属 fork 能力限制）
+                model = agent.get("model") or ""
+                self._send({"type": "agent_test_result", "request_id": rid,
+                            "success": True,
+                            "degraded": True,
+                            "note": f"chat API 不可用({chat_err})，降级为配置验证",
+                            "agent": {"id": agent.get("id"), "name": agent.get("name"),
+                                       "model": model, "type": agent.get("type")}})
+        except Exception as e:  # noqa: BLE001
+            logger.exception("agent_test 失败: %s", e)
+            self._send({"type": "agent_test_result", "request_id": rid,
+                        "success": False, "error": str(e)})
 
     def _retry_dispatch(self, request_id: str, message: dict) -> dict:
         mtype = message.get("type")

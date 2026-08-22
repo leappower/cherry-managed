@@ -37,6 +37,27 @@ OFFLINE_QUEUE: deque = deque()
 # 消息处理器注册表：type -> handler
 _HANDLERS: dict[str, Callable] = {}
 
+# 同步等待回执表：request_id -> asyncio.Future（发指令后等 sidecar 回执）
+_PENDING_REPLIES: dict[str, asyncio.Future] = {}
+
+
+def wait_for_reply(request_id: str, timeout: float = 15.0) -> asyncio.Future:
+    """登记一个等待回执的 Future（供「从设备导入」等同步请求用）。"""
+    fut = asyncio.get_running_loop().create_future()
+    _PENDING_REPLIES[request_id] = fut
+    return fut
+
+
+def resolve_reply(request_id: str, payload: dict) -> None:
+    """sidecar 回执到达时由 handler 调用，唤醒等待方。"""
+    fut = _PENDING_REPLIES.pop(request_id, None)
+    if fut is not None and not fut.done():
+        fut.set_result(payload)
+
+
+def cancel_pending_reply(request_id: str) -> None:
+    _PENDING_REPLIES.pop(request_id, None)
+
 
 def register_handler(msg_type: str):
     """装饰器：注册某个 WS 消息类型的处理函数。"""
@@ -153,7 +174,11 @@ class WSServer:
         # 已登记设备的首条 register：按设备专属 managed_key 校验（timing-safe）。
         bound = self.registry.get(device_id)
         if bound and bound.get("managed_key"):
-            return self._timing_safe(msg.get("managed_key", ""), bound["managed_key"])
+            ok = self._timing_safe(msg.get("managed_key", ""), bound["managed_key"])
+            logger.warning("auth dbg device=%s supplied_mk_len=%d boundlen=%d ok=%s",
+                           device_id, len(msg.get("managed_key", "") or ""),
+                           len(bound["managed_key"] or ""), ok)
+            return ok
         # 未绑定/首次：保留全局注册 token 校验（首登申领，绑定后走专属 key）。
         supplied = msg.get("token", "")
         return self._timing_safe(supplied, self.token)
@@ -249,6 +274,17 @@ async def _on_dispatch_result(server, websocket, device_id, msg):
             msg.get("error"),
         )
     await websocket.send_json({"type": "dispatch_result_ack", "request_id": msg.get("request_id")})
+
+
+@register_handler("agent_list_result")
+async def _on_agent_list_result(server, websocket, device_id, msg):
+    """agent_list_result：从设备导入时同步等回执。"""
+    resolve_reply(msg.get("request_id", ""), msg)
+
+
+@register_handler("agent_test_result")
+async def _on_agent_test_result(server, websocket, device_id, msg):
+    resolve_reply(msg.get("request_id", ""), msg)
 
 
 @register_handler("usage")
