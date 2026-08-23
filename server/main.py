@@ -17,7 +17,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -406,6 +406,56 @@ async def admin_agent_config_get(name: str):
     if cfg is None:
         raise HTTPException(status_code=404, detail="agent 配置不存在")
     return {"ok": True, "data": cfg}
+
+
+@app.get("/api/admin/agent-configs/{name}/export", dependencies=[Depends(require_admin)])
+async def admin_agent_config_export(name: str):
+    """AC1/导出：把配置包最新版导出为 .json 包文件（可跨服务器/跨安装包分发）。"""
+    cfg = _repo.get_config(name)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="agent 配置不存在")
+    latest_config = cfg.get("config")
+    if not latest_config:
+        raise HTTPException(status_code=404, detail="配置包无内容可导出")
+    pkg = {"schema": "cherry-managed.agent-config", "schema_version": 1,
+           "config": latest_config}
+    from fastapi.responses import JSONResponse
+    from urllib.parse import quote
+    fn = quote(name) + ".agent.json"
+    return JSONResponse(
+        content=pkg,
+        headers={"Content-Disposition": f'attachment; filename*=UTF-8\'\'{fn}'})
+
+
+@app.post("/api/admin/agent-configs/import", dependencies=[Depends(require_admin)],
+          status_code=201)
+async def admin_agent_config_import(request: Request,
+                                    token: str = Depends(require_admin)):
+    """AC1/导入：上传 .json 包文件内容 → 创建配置包（rev=1）。同名冲突 409。
+    兼容两种 body：扁平结构 {metadata,agent,...} 或 export 产出的带壳 {schema,config:{...}}。"""
+    try:
+        pkg = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body 必须是合法 JSON")
+    if not isinstance(pkg, dict):
+        raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+    # 剥 export 带壳结构
+    if "config" in pkg and isinstance(pkg["config"], dict) and \
+       ("agent" in pkg["config"] or "metadata" in pkg["config"]):
+        pkg = pkg["config"]
+    errors = validate_pkg(pkg, require_id=False)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    ver = pkg.get("metadata", {}).get("version", "1.0.0")
+    if not version_semver_ok(ver):
+        raise HTTPException(status_code=400, detail=f"version 非法语义化版本: {ver}")
+    name = pkg.get("metadata", {}).get("name") or (pkg.get("agent") or {}).get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="metadata.name 或 agent.name 必填")
+    if _repo.get_config(name):
+        raise HTTPException(status_code=409, detail=f"配置包「{name}」已存在，请用 PUT 更新或删除后重导")
+    rec = _repo.create_config(pkg, admin_auth.admin_user)
+    return {"ok": True, "data": rec}
 
 
 @app.put("/api/admin/agent-configs/{name}", dependencies=[Depends(require_admin)])
