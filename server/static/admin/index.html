@@ -328,6 +328,7 @@ async function loadPackages() {
         '<span class="pkg-name">' + esc(p.name) + '</span>' +
         '<span class="muted">rev' + esc(p.latest_rev) + ' · v' + esc(p.version) +
         (p.locked ? ' 🔒' : '') + '</span>' +
+        '<button class="del-pkg" data-name="' + esc(p.name) + '" title="导出为 .json 包文件" onclick="event.stopPropagation();exportPkg(\'' + esc(p.name) + '\')">⬇</button>' +
         '<button class="del-pkg" data-name="' + esc(p.name) + '" title="删除该配置包" onclick="event.stopPropagation();delPkg(\'' + esc(p.name) + '\')">🗑</button></div>';
     });
   }
@@ -349,7 +350,14 @@ async function loadPackages() {
       '<button class="secondary" onclick="loadPkgVersions()">版本历史</button></div>');
   } else {
     // 新建视图：顶部加「从设备导入」入口（生产端断层补齐）
-    let importHtml = '<div class="card"><h3>📥 从设备导入 Agent（生产端）</h3>' +
+    let importHtml = '' +
+      '<div class="card"><h3>📄 从 .json 包文件导入（生产端文件口）</h3>' +
+      '<div class="muted" style="margin-bottom:8px">任意 CherryStudio/任意机器做好 Agent → 导出 .json → 在此上传 → 变为可下发的配置包。</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+      '<input type="file" id="imp-file" accept=".json,application/json" style="flex:1;min-width:220px">' +
+      '<button class="secondary" onclick="importPkgFile()">⬆ 上传导入</button></div>' +
+      '<div id="impfile-status" class="muted" style="margin-top:8px"></div></div>' +
+      '<div class="card"><h3>📥 从设备导入 Agent（生产端）</h3>' +
       '<div class="muted" style="margin-bottom:8px">选一台员工机 → 列出该机现有 Agent → 选一个导入为配置包（自动带 id，可直接推送升级）。</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
       '<select id="imp-device" style="flex:1;min-width:220px"><option value="">加载设备…</option></select>' +
@@ -456,6 +464,44 @@ async function loadDeviceAgents() {
   } catch (e) { st.textContent = '拉取失败: ' + (e.message || e); }
 }
 
+async function exportPkg(name) {
+  // 下载 .json 包文件（走 fetch 手动拿 blob，不走 api() 的 JSON.parse）
+  try {
+    const h = { 'X-Admin-Token': token };
+    const r = await fetch('/api/admin/agent-configs/' + encodeURIComponent(name) + '/export', { headers: h });
+    if (r.status === 401) { logoutUI('会话已过期，请重新登录'); return; }
+    if (!r.ok) { alert('导出失败 HTTP ' + r.status); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name + '.agent.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('导出失败: ' + (e.message || e)); }
+}
+
+async function importPkgFile() {
+  const f = $('imp-file').files && $('imp-file').files[0];
+  const st = $('impfile-status');
+  if (!f) { st.textContent = '请先选择 .json 包文件'; return; }
+  st.textContent = '正在上传解析…';
+  try {
+    const txt = await f.text();
+    const pkg = JSON.parse(txt);
+    const r = await api('/api/admin/agent-configs/import', {
+      method: 'POST',
+      body: JSON.stringify(pkg)
+    });
+    const d = r.data || {};
+    st.innerHTML = '✅ 已导入 <b>' + esc(d.name || '') + '</b>（rev' + esc(d.rev) + '）<button class="secondary" style="margin-left:8px" onclick="afterPkgImport()">刷新列表</button>';
+    $('imp-file').value = '';
+  } catch (e) {
+    let msg = (e.message || e);
+    if (e && e.detail) msg = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail);
+    st.innerHTML = '❌ 导入失败: ' + esc(msg);
+  }
+}
+
 async function importAgent() {
   const dev = $('imp-device').value, aid = $('imp-agent').value;
   if (!dev || !aid) { alert('先选设备和 Agent'); return; }
@@ -479,6 +525,8 @@ async function importAgent() {
 }
 
 function selectImportedPkg() { loadTab('packages'); }
+
+function afterPkgImport() { pkgState = { editing: null, mode: 'form' }; loadTab('packages'); }
 
 async function delPkg(name) {
   if (!confirm('确认删除配置包「' + name + '」？其全部版本历史与设备部署状态将一并删除。')) return;
