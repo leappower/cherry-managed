@@ -338,7 +338,8 @@ async function loadPackages() {
   let editorHtml = '';
   if (pkgState.editing) {
     const detail = (await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing))).data || {};
-    const latest = detail.version || {};
+    // ⚠️ 修复：服务端 GET 返回 data.config（最新版内容），不是 data.version
+    const latest = (detail && detail.config) || {};
     const agent = latest.agent || {};
     const meta = latest.metadata || {};
     const cfgTxt = JSON.stringify(agent.configuration || {}, null, 2);
@@ -565,10 +566,13 @@ async function savePkg() {
   try {
     const body = Object.assign({}, pkg);
     if (isEdit) {
-      // 编辑时：确保带稳定 id（从服务端最新配置里拿）
+      // ⚠️ 修复1：服务端 GET 返回 data.config.agent（最新版内容），不是 data.version.agent
       const cur = ((await api('/api/admin/agent-configs/' + encodeURIComponent(pkgState.editing))).data || {});
-      const curAgent = (cur && cur.version && cur.version.agent) || {};
+      const curCfg = (cur && cur.config) || {};
+      const curAgent = (curCfg && curCfg.agent) || {};
       body.agent.id = curAgent.id;
+      // ⚠️ 版本单调性由后端统一处理（update_config：用户未改 version 时自动对齐 rev），
+      // UI 不在此自增，避免与后端双重变更冲突
     }
     const r = await api(url, { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(body) });
     alert(isEdit ? '已更新为 rev' + r.data.rev : '已创建 rev1');

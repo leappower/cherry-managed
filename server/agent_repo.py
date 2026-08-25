@@ -103,7 +103,15 @@ class AgentRepo:
             (name,),
         ).fetchone()
         next_rev = row["next_rev"]
-        version = pkg.get("metadata", {}).get("version", f"1.{next_rev}.0")
+        version = pkg.get("metadata", {}).get("version", "")
+        # ⚠️ 修复：version 单调性。UI 常带与旧版相同的 version（用户没改），
+        # 若不做处理会出现「同一 version 对应多 rev」→ 回滚/对账按 version 无法区分。
+        # 规则：1) 缺省或与最新版相同 → 自动对齐到 rev；2) 已变更（语义升版）→ 保留用户值。
+        prev = self.get_latest(name)
+        prev_ver = (prev or {}).get("version") or ""
+        if not version or version == prev_ver:
+            version = f"1.{next_rev}.0"
+            pkg.setdefault("metadata", {})["version"] = version
         pkg.setdefault("metadata", {})["name"] = name
         pkg["metadata"]["rev"] = next_rev
         pkg["metadata"]["created_at"] = _now()
