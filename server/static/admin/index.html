@@ -347,6 +347,7 @@ async function loadPackages() {
       '<div class="push-actions"><button class="secondary" onclick="pkgState={editing:null,mode:\'form\'};loadTab(\'packages\')">新建</button>' +
       '<button class="secondary" onclick="loadPkgVersions()">刷新版本</button></div>' +
       pkgForm(meta, agent, cfgTxt) +
+      pkgReadonlyExtras(latest) +
       '<div class="push-actions"><button onclick="savePkg()">保存为新版本(rev+1)</button>' +
       '<button class="secondary" onclick="loadPkgVersions()">版本历史</button></div>');
   } else {
@@ -400,6 +401,64 @@ function pkgForm(meta, agent, cfgTxt) {
 }
 
 function verTxt(v) { return v || ''; }
+
+// ---- JJC-20260826-001：包详情只读展示 skills / MCP / 知识库（元数据壳边界） ----
+// 数据源 GET /api/admin/agent-configs/{name} → config（最新版内容）：
+//   config.skills             → 包内 skill 实体列表（InstalledSkillSchema 字段，无 content）
+//   config.agent.mcps         → agent 级 MCP 元数据（兜底 config.mcp）
+//   config.agent.knowledgeBaseIds → agent 关联知识库 ID 列表
+// skills/mcp 为 null/undefined 时渲染空态，不抛 JS 异常。
+// 注：这里全部为只读展示，编辑保存（savePkg）的请求体不携带 skills/mcp 键，
+// 与编辑表单彻底隔离（避免 extra allow 静默丢弃）。
+function pkgReadonlyExtras(cfg) {
+  if (!cfg) cfg = {};
+  const agent = (cfg && cfg.agent) || {};
+  const skills = Array.isArray(cfg.skills) ? cfg.skills : [];
+  const mcps = Array.isArray(agent.mcps) ? agent.mcps
+    : (Array.isArray(cfg.mcp) ? cfg.mcp : []);
+  const kbIds = Array.isArray(agent.knowledgeBaseIds) ? agent.knowledgeBaseIds
+    : (Array.isArray(cfg.knowledgeBaseIds) ? cfg.knowledgeBaseIds : []);
+
+  let skillHtml;
+  if (!skills.length) {
+    skillHtml = '<span class="muted">无（该包未携带技能元数据壳）</span>';
+  } else {
+    skillHtml = '<table><thead><tr><th>id</th><th>name</th><th>version</th><th>namespace</th><th>启停</th></tr></thead><tbody>' +
+      skills.map(function (s) {
+        return '<tr><td>' + esc(s.id || '') + '</td><td>' + esc(s.name || '') +
+          '</td><td>' + esc(s.version || '') + '</td><td>' + esc(s.namespace || '') +
+          '</td><td>' + (s.isEnabled === false ? '禁用' : '启用') + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  let mcpHtml;
+  if (!mcps.length) {
+    mcpHtml = '<span class="muted">无</span>';
+  } else {
+    mcpHtml = '<table><thead><tr><th>名称</th><th>类型</th></tr></thead><tbody>' +
+      mcps.map(function (m) {
+        return '<tr><td>' + esc((m && m.name) || (m && m.id) || JSON.stringify(m)) +
+          '</td><td>' + esc((m && m.type) || '') + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  let kbHtml;
+  if (!kbIds.length) {
+    kbHtml = '<span class="muted">无</span>';
+  } else {
+    kbHtml = '<table><thead><tr><th>ID</th></tr></thead><tbody>' +
+      kbIds.map(function (k) {
+        return '<tr><td>' + esc(k && k.id ? k.id : (typeof k === 'string' ? k : JSON.stringify(k))) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  return '<div class="card"><h3>技能 / MCP / 知识库（只读）</h3>' +
+    '<div class="muted" style="margin-bottom:6px">技能元数据壳来自源设备导入；正文需从员工机另取（如需完整技能内容请从源员工机导出）。本区块为只读，编辑保存时不参与提交。</div>' +
+    '<h4 style="margin:8px 0 4px">Skills（' + skills.length + '）</h4>' + skillHtml +
+    '<h4 style="margin:8px 0 4px">MCP（' + mcps.length + '）</h4>' + mcpHtml +
+    '<h4 style="margin:8px 0 4px">知识库（' + kbIds.length + '）</h4>' + kbHtml +
+    '</div>';
+}
 
 async function selectPkg(el) {
   pkgState.editing = el.dataset.name;

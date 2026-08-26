@@ -496,9 +496,17 @@ async def admin_device_agent_import(device_id: str,
                                      token: str = Depends(require_admin)):
     """从员工机导入 Agent 列表为配置包（方案B生产端）。
 
-    向目标设备发 WS 指令 agent_list → 等回执 → 把选中的 agent 存为配置包。
+    向目标设备发 WS 指令 agent_list（带 with_skills: true）→ 等回执 → 把选中的
+    agent 存为配置包。
     Body（可选）：{"agent_id": "...", "name": "..."} 指定要导入的 agent；
     不指定则返回设备上的全部 agent 清单供 UI 选择。
+
+    JJC-20260826-001：列表分支透传完整 AgentEntity（含信封 skills，不再 6 字段
+    白名单截断）；导入分支把 enabled 完整 skill 实体装入 pkg.skills、agent.skills
+    引用 skillId 列表，agent 补充 mcps/knowledgeBaseIds/disabledTools/modelName，
+    configuration 原样透传。存量 sidecar（不理解 with_skills）回执 agent 缺
+    skills 键 → 519 ERR_SKILLS_MISSING（请升级员工端侧车），拒绝落库；
+    skills 为空数组 = 合法（不报错）。
     """
     import asyncio
     from ws_server import wait_for_reply, resolve_reply
@@ -510,7 +518,8 @@ async def admin_device_agent_import(device_id: str,
     if ws is None:
         raise HTTPException(status_code=404, detail="设备 WS 连接不存在")
     rid = f"imp-{device_id[-6:]}-{_now_short()}"
-    await ws.send_json({"type": "agent_list", "request_id": rid})
+    await ws.send_json({"type": "agent_list", "request_id": rid,
+                        "with_skills": True})
     fut = wait_for_reply(rid, timeout=20)
     try:
         reply = await asyncio.wait_for(fut, timeout=20)
@@ -525,6 +534,16 @@ async def admin_device_agent_import(device_id: str,
         pick = next((a for a in agents if a.get("name") == want or a.get("id") == want), None)
         if pick is None:
             raise HTTPException(status_code=404, detail=f"设备上未找到 agent: {want}")
+        # 存量 sidecar：不理解 with_skills → 回执 agent 对象无 skills 键。
+        # 返回 ERR_SKILLS_MISSING 并拒绝落库（升级员工端侧车后重试）；
+        # skills 为空数组 = 合法（该 agent 未启用任何技能，不报错）。
+        if "skills" not in pick or pick.get("skills") is None:
+            raise HTTPException(
+                status_code=519,
+                detail="ERR_SKILLS_MISSING：设备侧未返回 skills 元数据壳，请升级员工端侧车后重试",
+            )
+        enabled = [s for s in (pick.get("skills") or []) if isinstance(s, dict)]
+        skills_ent = [_skill_entity(s) for s in enabled]
         pkg = {
             "metadata": {"name": pick.get("name"), "version": "1.0.0",
                          "source_device": device_id, "source_agent_id": pick.get("id")},
@@ -536,15 +555,23 @@ async def admin_device_agent_import(device_id: str,
                 "instructions": pick.get("instructions") or "",
                 "model": pick.get("model") or "cherryai::qwen",
                 "configuration": pick.get("configuration") or {},
+                # JJC-20260826-001：完整 AgentEntity 补充字段（透传，MCP 等元数据壳）
+                "mcps": pick.get("mcps") or [],
+                "knowledgeBaseIds": pick.get("knowledgeBaseIds") or [],
+                "disabledTools": pick.get("disabledTools") or [],
+                "modelName": pick.get("modelName"),
+                "skills": [s.get("id") for s in enabled if s.get("id")],
             },
+            # enabled 完整 skill 实体随包入仓（validate_pkg 要求 agent.skills 引用
+            # 须在 pkg.skills 存在；两侧同源自 pick，确保一致）
+            "skills": skills_ent,
         }
         cfg = _repo.create_config(pkg, created_by=admin_auth.admin_user)
         return {"ok": True, "data": {"imported": True, "config": cfg,
                                       "agent": pick}}
-    # 未指定：仅列出设备上的 agent（供 UI 选择）
-    return {"ok": True, "data": {"imported": False, "agents": [
-        {k: (a.get(k) or "") for k in ("id", "name", "type", "model", "description", "instructions")}
-        for a in agents]}}
+    # 未指定：仅列出设备上的 agent（供 UI 选择）——透传完整 AgentEntity
+    # （含信封 skills/MCP 等），不再 6 字段白名单截断
+    return {"ok": True, "data": {"imported": False, "agents": agents}}
 
 
 @app.post("/api/admin/devices/{device_id}/agent-test", dependencies=[Depends(require_admin)])
@@ -656,6 +683,26 @@ def _now_short() -> str:
     import datetime
 
     return datetime.datetime.now(datetime.timezone.utc).strftime("%H%M%S%f")[:15]
+
+
+# InstalledSkillSchema 字段（Fork 源码钉死，无 content）；源实体缺键时置 None，
+# 保证去掉 content 后形如 {'id','name','description','folderName','source',
+# 'sourceUrl','namespace','author','version','sourceTags','contentHash'}
+_SKILL_ENTITY_KEYS = (
+    "id", "name", "description", "folderName", "source", "sourceUrl",
+    "namespace", "author", "version", "sourceTags", "contentHash",
+)
+
+
+def _skill_entity(s: dict) -> dict:
+    """从 sidecar 回执的 enabled skill 实体提取 InstalledSkillSchema 字段（驼峰，无 content）。
+
+    只拷贝已声明字段，不引入任何额外键（与编辑表单彻底隔离，避免 extra allow 静默丢弃）。
+    """
+    out = {k: s.get(k) for k in _SKILL_ENTITY_KEYS}
+    # 剔除 None 值字段（保持与 InstalledSkillSchema 可选字段语义一致；
+    # 避免 {"field": null} 进入 compute_sha256/落盘/推送载荷）
+    return {k: v for k, v in out.items() if v is not None}
 
 
 @app.post("/api/admin/push/agents", dependencies=[Depends(require_admin)])

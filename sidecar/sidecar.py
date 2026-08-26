@@ -569,13 +569,34 @@ class SidecarRunner:
     def _handle_agent_list(self, msg: dict) -> None:
         """agent_list：本机拉取全部 Agent 清单回传（供服务端「从设备导入」）。
 
-        请求：{type: agent_list, request_id} → 回执：{type: agent_list_result, request_id, agents:[...]}
+        请求：{type: agent_list, request_id, with_skills?: true}
+        → 回执：{type: agent_list_result, request_id, agents:[...], skills?}
+
+        JJC-20260826-001：with_skills=true 时对每个 agent 拉取其已启用 skill 实体
+        （isEnabled camelCase 过滤，仅 enabled 的完整 skill 实体装入 a["skills"]），
+        单 agent 拉取失败降级为空列表+告警日志，不阻塞整体；不带 with_skills 时
+        行为与现状完全一致（向后兼容）。
         """
         rid = msg.get("request_id") or ""
         try:
             agents = self.cherry.list_agents()
-            self._send({"type": "agent_list_result", "request_id": rid,
-                        "success": True, "agents": agents})
+            with_skills = bool(msg.get("with_skills"))
+            reply: dict = {"type": "agent_list_result", "request_id": rid,
+                           "success": True, "agents": agents,
+                           "with_skills": with_skills}
+            if with_skills:
+                for a in agents:
+                    if not isinstance(a, dict):
+                        continue
+                    try:
+                        sk = self.cherry.list_skills(agent_id=a.get("id"))
+                        a["skills"] = [s for s in (sk or [])
+                                        if isinstance(s, dict) and s.get("isEnabled", True)]
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("agent %s 拉取 skills 失败(降级为空列表): %s",
+                                       a.get("id"), e)
+                        a["skills"] = []
+            self._send(reply)
         except Exception as e:  # noqa: BLE001
             logger.exception("agent_list 失败: %s", e)
             self._send({"type": "agent_list_result", "request_id": rid,

@@ -105,8 +105,14 @@ class CherryClient:
         except urllib.error.URLError as e:
             raise CherryError(f"连接失败 {self.base_url}: {e.reason}") from e
 
-    def _get(self, path: str) -> Any:
-        return self._request("GET", path)
+    def _get(self, path: str, params: Optional[dict] = None) -> Any:
+        """GET 请求；params 非空时拼 query string（对齐 fork_client 防御写法）。"""
+        url = path
+        if params:
+            from urllib.parse import urlencode
+
+            url += ("&" if "?" in url else "?") + urlencode(params)
+        return self._request("GET", url)
 
     def _post(self, path: str, data: dict) -> Any:
         return self._request("POST", path, data)
@@ -168,9 +174,16 @@ class CherryClient:
         return resp.get("data", []) if isinstance(resp, dict) else []
 
     # ── Skill 管理（受管 API：/v1/admin/skills）────────────────
-    def list_skills(self) -> list:
-        """列出所有 Skill。返回 [{id, name, version, ...}]"""
-        resp = self._get("/v1/skills")
+    def list_skills(self, agent_id: Optional[str] = None) -> list:
+        """列出 Skill。返回 [{id, name, version, ...}]（InstalledSkillSchema 字段，无 content）。
+
+        agent_id 非空时带 ``agentId``（camelCase，Fork ListSkillsQuerySchema 钉死）查询参数；
+        缺省则不携带 query（行为与现状完全一致）。
+        """
+        params = None
+        if agent_id:
+            params = {"agentId": agent_id}
+        resp = self._get("/v1/skills", params)
         return resp.get("data", []) if isinstance(resp, dict) else []
 
     def create_skill(self, payload: dict) -> dict:
