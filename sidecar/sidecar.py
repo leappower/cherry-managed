@@ -239,11 +239,46 @@ def _managed_key_file() -> Path:
     return _user_config_dir() / MANAGED_KEY_FILE
 
 
+def _scan_user_managed_key() -> str:
+    """LocalSystem 服务降级：全用户扫描真实用户的 managed_key 文件（与 _load_config 同款兜底）。
+
+    NSSM 服务以 LocalSystem 运行时 %APPDATA% 指向 systemprofile，读不到真实用户
+    （安装器 first-run 在用户上下文生成）的 managed_key；若 systemprofile 下首次
+    运行会重新生成新 key，与 first-run 落盘、服务器已绑定的 key 失配，造成
+    「装完连不上服务器」的 94 号机问题。此处扫描 C:/Users/*/CherryManaged/
+    下最后修改的 managed_key，保证服务与用户配置同源。
+    """
+    if os.name != "nt":
+        return ""
+    users_root = Path(os.environ.get("SystemDrive", "C:")) / "Users"
+    best: tuple[float, str] | None = None
+    try:
+        for ud in users_root.iterdir():
+            if not ud.is_dir():
+                continue
+            p = ud / "AppData" / "Roaming" / USER_CONFIG_DIR_NAME / MANAGED_KEY_FILE
+            if p.exists():
+                try:
+                    key = p.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if key:
+                    mtime = p.stat().st_mtime
+                    if best is None or mtime > best[0]:
+                        best = (mtime, key)
+    except OSError:
+        pass
+    return (best[1] if best else "")
+
+
 def _managed_key() -> str:
     """读取/生成设备级受管密钥（JJC-20260818-001）。
 
     幂等：独立文件存在则直接读取（重启进程 key 不变）；否则用
     ``secrets.token_urlsafe(32)`` 生成唯一 key 并落盘独立文件。
+    LocalSystem 服务场景（当前用户目录无 key）：先全用户扫描兜底读真实用户
+    的 key（与 _load_config 同款），命中则直接复用且**不落盘到 systemprofile**
+    （避免生成第二把 key 造成服务/DB 失配）；全部未命中才生成新 key。
     落盘权限收紧为 0600（POSIX）/ 显式收紧 0400（Windows 尽量），
     敏感 key 不写日志、不混入 device.json。
 
@@ -259,6 +294,10 @@ def _managed_key() -> str:
             key = ""
         if key:
             return key
+    # LocalSystem 服务降级：全用户扫描兜底（不写 systemprofile，只读复用）
+    scanned = _scan_user_managed_key()
+    if scanned:
+        return scanned
     # 生成并落盘（幂等：仅当文件缺失/空才写）
     key = secrets.token_urlsafe(32)
     mkf.parent.mkdir(parents=True, exist_ok=True)

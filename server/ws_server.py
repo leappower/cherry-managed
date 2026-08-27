@@ -175,9 +175,11 @@ class WSServer:
         bound = self.registry.get(device_id)
         if bound and bound.get("managed_key"):
             ok = self._timing_safe(msg.get("managed_key", ""), bound["managed_key"])
-            logger.warning("auth dbg device=%s supplied_mk_len=%d boundlen=%d ok=%s",
+            logger.warning("auth dbg device=%s supplied_mk_len=%d boundlen=%d ok=%s supplied_prefix=%s bound_prefix=%s",
                            device_id, len(msg.get("managed_key", "") or ""),
-                           len(bound["managed_key"] or ""), ok)
+                           len(bound["managed_key"] or ""), ok,
+                           (msg.get("managed_key", "") or "")[:8],
+                           (bound["managed_key"] or "")[:8])
             return ok
         # 未绑定/首次：保留全局注册 token 校验（首登申领，绑定后走专属 key）。
         supplied = msg.get("token", "")
