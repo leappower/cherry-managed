@@ -264,7 +264,7 @@ def _pagination(limit: int | None, offset: int | None) -> tuple[int, int]:
 async def admin_devices(limit: int | None = None, offset: int | None = None):
     """设备列表（含在线状态/分组）+ 分页元数据（total/limit/offset）。"""
     lim, off = _pagination(limit, offset)
-    all_devices = ws_server.registry.get_all()
+    all_devices = ws_server.registry.list_devices_deliverable()
     return {"total": len(all_devices), "limit": lim, "offset": off,
             "items": all_devices[off:off + lim]}
 

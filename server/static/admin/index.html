@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CherryStudio 企业受管版 · 管理后台</title>
 <style>
+  .st-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+  .st-online { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+  .st-offline { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+  .st-never { background: #eceff1; color: #455a64; border: 1px solid #b0bec5; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f4f6f9; color: #1f2937; }
   .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
@@ -182,6 +186,14 @@ function displayDevice(r) {
 function remarkCell(r) {
   const v = r.remark || '';
   return '<input class="remark-in" data-dev="' + esc(r.device_id) + '" value="' + esc(v) + '" placeholder="添加备注" onchange="saveRemark(this)">';
+}
+
+function statusBadge(v, r) {
+  // v = "在线" | "离线" | "未连接"（后端已语义化）；离线时附 offline_since
+  const cls = v === '在线' ? 'st-online' : (v === '离线' ? 'st-offline' : 'st-never');
+  const dot = v === '在线' ? '●' : (v === '离线' ? '○' : '◇');
+  const since = (v === '离线' && r.offline_since) ? '（' + esc(r.offline_since) + '）' : '';
+  return '<span class="st-badge ' + cls + '" title="' + esc(v) + '">' + dot + ' ' + esc(v) + since + '</span>';
 }
 
 async function saveRemark(input) {
@@ -679,7 +691,7 @@ async function loadTab(tab) {
         { key: 'hostname', label: '主机名' },
         { key: 'os', label: '系统' },
         { key: 'group', label: '分组' },
-        { key: 'online', label: '状态', fn: (v) => (v ? '在线' : '离线') },
+        { key: 'online', label: '状态', fn: (r) => statusBadge(r.online, r) },
         { key: '!remark', label: '备注', fn: (r) => remarkCell(r) },
         { key: 'last_seen', label: '最近在线' }
       ]);

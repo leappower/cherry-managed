@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import threading
+import time as _time
 from pathlib import Path
 
 import db
@@ -17,6 +18,31 @@ import db
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _parse_iso(s: str) -> float | None:
+    """解析 ISO8601 时间戳为 epoch 秒；失败返回 None。"""
+    try:
+        dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _fmt_duration(secs: int | None) -> str | None:
+    """秒数格式化为人类可读时长（如 "2小时前"）。"""
+    if secs is None:
+        return None
+    s = max(int(secs), 0)
+    if s < 60:
+        return f"{s}秒前"
+    if s < 3600:
+        return f"{s // 60}分钟前"
+    if s < 86400:
+        return f"{s // 3600}小时前"
+    return f"{s // 86400}天前"
 
 
 class DeviceRegistry:
@@ -147,6 +173,44 @@ class DeviceRegistry:
             "last_seen, \"group\", token, managed_key, ip, remark FROM devices ORDER BY device_id"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_devices_deliverable(self) -> list[dict]:
+        """可交付视图：online 转为语义化状态字符串，供管理端 UI/API 直接展示。
+
+        状态取值：
+          - "在线"     WS 长连接活跃（registry.online=1）
+          - "离线"     曾在线，当前 WS 断开（last_seen 距今超过 OFFLINE_THRESHOLD）
+          - "未连接"   注册过但从未在线（last_seen 为空/极旧，无连接历史）
+        附 online_raw（0/1）供程序逻辑（派发判断）继续使用。
+        """
+        import time as _time
+        rows = self.get_all()
+        now = _time.time()
+        out = []
+        for r in rows:
+            d = dict(r)
+            raw = 1 if d.get("online") else 0
+            ls = d.get("last_seen")
+            offline_secs = None
+            if ls:
+                try:
+                    ls_ts = _parse_iso(ls)
+                    offline_secs = int(now - ls_ts) if ls_ts else None
+                except Exception:
+                    offline_secs = None
+            if raw == 1:
+                status = "在线"
+            elif ls and offline_secs is not None and offline_secs < 0:
+                status = "在线"  # last_seen 在未来（时钟偏差），仍视为在线
+            elif ls:
+                status = "离线"
+            else:
+                status = "未连接"
+            d["online"] = status
+            d["online_raw"] = raw
+            d["offline_since"] = _fmt_duration(offline_secs) if (status == "离线" and offline_secs is not None) else None
+            out.append(d)
+        return out
 
     def by_group(self, group: str) -> list[dict]:
         conn = db.get_conn(self.db_path)
