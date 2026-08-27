@@ -146,9 +146,12 @@ def _embedded_config() -> Path:
 
 
 def _load_config(explicit: str | None = None) -> dict:
-    """读取配置，优先级：显式 --config 参数 > 用户级 config.json > 内嵌模板。
+    """读取配置，优先级：显式 --config 参数 > 当前用户 config.json > 全用户扫描 > 内嵌模板。
 
     不存在用户级配置时，用内嵌模板生成并落盘（AC-E4-4 非 _MEIPASS）。
+    LocalSystem 服务场景：进程 APPDATA 指向 systemprofile，读不到真实用户配置；
+    此时扫描用户目录下的 CherryManaged 配置（与 managed_key 扫描同款兜底），
+    取最后修改的（新装机器只有一份）。
     """
     if explicit:
         with open(explicit, encoding="utf-8") as f:
@@ -158,6 +161,24 @@ def _load_config(explicit: str | None = None) -> dict:
     if user_cfg.exists():
         with open(user_cfg, encoding="utf-8") as f:
             return json.load(f)
+    # LocalSystem 服务降级：全用户扫描真实用户的 CherryManaged 配置
+    if os.name == "nt":
+        users_root = Path(os.environ.get("SystemDrive", "C:")) / "Users"
+        best: tuple[float, Path] | None = None
+        try:
+            for ud in users_root.iterdir():
+                if not ud.is_dir():
+                    continue
+                p = ud / "AppData" / "Roaming" / USER_CONFIG_DIR_NAME / USER_CONFIG_FILE
+                if p.exists():
+                    mtime = p.stat().st_mtime
+                    if best is None or mtime > best[0]:
+                        best = (mtime, p)
+        except OSError:
+            pass
+        if best is not None:
+            with open(best[1], encoding="utf-8") as f:
+                return json.load(f)
     # 落盘用户级（用内嵌作模板）
     if embedded.exists():
         _user_config_dir().mkdir(parents=True, exist_ok=True)
