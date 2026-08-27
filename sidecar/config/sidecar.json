@@ -1,12 +1,12 @@
 {
   "server": {
-    "url": "ws://127.0.0.1:2334/ws",
+    "url": "ws://192.168.3.181:2334/ws",
     "token": "CHANGE_ME_managed_token"
   },
   "device": {
-    "device_id": "dev-sidecar-001",
-    "hostname": "dev-sidecar-host",
-    "os": "linux",
+    "device_id": "",
+    "hostname": "",
+    "os": "windows",
     "group": "default"
   },
   "fork": {
